@@ -319,8 +319,15 @@ final class OverlayView: NSView {
     /// `snip_body_labelShortKey*`，但只留 Baton 真的会响应的键。它那 11 行里
     /// 「选择多个窗口 / 切换截图阴影 / 回溯区域 / 回溯截图」Baton 还没有对应能力，
     /// 写上去就是假提示 —— 按了没反应比不写更糟。
+    ///
+    /// 圈选之后左下角不再显示提示条（会让位给工具条），那几行由标注画布接管：
+    /// 方向键移选区、⌘/⇧ 扩缩，和这里写的是同一套语义。
     private static func hintRows(pickable: Bool) -> [ShortcutHintView.Row] {
-        var rows: [ShortcutHintView.Row] = [.init("移动光标 1 个像素", "K, J, H, L")]
+        var rows: [ShortcutHintView.Row] = [
+            .init("移动光标 1 个像素", "K, J, H, L"),
+            .init("移动捕获区域 1 个像素", "↑, ↓, ←, →"),
+            .init("扩大 / 缩小捕获区域", "⌘ / ⇧ + 方向键"),
+        ]
         if pickable {
             rows.append(.init("切换窗口/窗口区域", "⇥"))
         }
@@ -516,6 +523,13 @@ final class OverlayView: NSView {
         sizeLayer.isHidden = true
         hideMagnifier()
         dimLayer.fillColor = NSColor.black.withAlphaComponent(0.30).cgColor
+    }
+
+    /// 标注阶段调整选区：只换矩形，冻结帧和内容都不动。
+    func updateSelection(_ global: CGRect) {
+        guard lockedSelection != nil else { return }
+        lockedSelection = global
+        updateSelectionLayers()
     }
 
     /// 外部指定选区时直接锁住，不再等鼠标。

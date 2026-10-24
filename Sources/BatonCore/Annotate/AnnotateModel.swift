@@ -757,6 +757,26 @@ public final class AnnotateDocument {
         selection = id
     }
 
+    /// 捕获区域变了：所有图元跟着平移同样的距离（单位是图片像素）。
+    ///
+    /// 撤销栈也要一起移 —— 否则「画一条箭头 → 调大选区 → ⌘Z」会把箭头撤回到
+    /// 旧坐标系下的位置，看上去就是凭空错位。这里不压新快照：改选区是视图调整，
+    /// 不是一次可撤销的编辑。
+    public func translateAll(dx: CGFloat, dy: CGFloat) {
+        guard dx != 0 || dy != 0 else { return }
+        func shift(_ list: [Annotation]) -> [Annotation] {
+            list.map { annotation in
+                var moved = annotation
+                moved.offsetBy(dx: dx, dy: dy)
+                return moved
+            }
+        }
+        annotations = shift(annotations)
+        undoStack = undoStack.map(shift)
+        redoStack = redoStack.map(shift)
+        if let snapshot = transactionSnapshot { transactionSnapshot = shift(snapshot) }
+    }
+
     @discardableResult
     public func undo() -> Bool {
         guard let previous = undoStack.popLast() else { return false }

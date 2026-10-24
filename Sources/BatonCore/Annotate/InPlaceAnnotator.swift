@@ -30,9 +30,14 @@ public final class InPlaceAnnotator {
     /// 每次截图都换一份全新文档，否则上一张图的标注会跟着留到下一次截图。
     private var document = AnnotateDocument()
     private var overlay: OverlayController?
+    /// 画布挂在覆盖层的宿主视图上，调选区时要拿它的 bounds 重排工具条
+    private var hostView: OverlayView?
     private var canvas: AnnotateCanvasView?
     private var bar: AnnotateBarView?
     private var properties: AnnotatePropertyBarView?
+    /// 选区 8 个手柄。画在宿主层而不是画布里：画布的 bounds 就是选区，
+    /// 手柄骑在边界上，画在画布内会被裁掉朝外的一半（实测只剩 1/4）。
+    private let selectionChrome = CAShapeLayer()
     private var image: CGImage?
     private var result: CaptureResult?
     private var scale: CGFloat = 1
@@ -57,6 +62,7 @@ public final class InPlaceAnnotator {
 
         self.result = result
         self.overlay = overlay
+        self.hostView = host
         self.image = image
         self.hasFinished = false
         // 上一次截图留下的标注（含撤销栈、选中态）不能带进这一次
@@ -72,6 +78,12 @@ public final class InPlaceAnnotator {
         canvas.drawsBaseImage = false
         canvas.tool = .rectangle
         canvas.frame = local
+        // 圈完之后选区还能拖：8 个手柄改尺寸，方向键移/扩缩。
+        // 画布拿全局坐标跟宿主对话，自己不用关心屏幕坐标系怎么翻转。
+        canvas.adjustableSelection = true
+        canvas.selectionFrame = result.screenRect
+        canvas.selectionLimit = result.display.screenFrame
+        canvas.onSelectionChange = { [weak self] rect in self?.adjustSelection(to: rect) }
         canvas.onChange = { [weak self] in self?.refreshBar() }
         canvas.onCommand = { [weak self] command in self?.perform(command) }
         host.addSubview(canvas)
@@ -84,6 +96,10 @@ public final class InPlaceAnnotator {
         bar.onCommand = { [weak self] command in self?.perform(command) }
         bar.onExternal = { [weak self] action in self?.handleExternal(action) }
         bar.onMenu = { [weak self] action in self?.handleMenu(action) }
+        selectionChrome.fillColor = CGColor(srgbRed: 0.15, green: 0.51, blue: 0.96, alpha: 1)
+        selectionChrome.strokeColor = CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.95)
+        selectionChrome.lineWidth = 1
+        host.layer?.addSublayer(selectionChrome)
         host.addSubview(bar)
         self.bar = bar
 
@@ -95,6 +111,7 @@ public final class InPlaceAnnotator {
         self.properties = properties
 
         layoutBars(around: local, in: host.bounds)
+        updateSelectionChrome(local)
 
         host.window?.makeKey()
         host.window?.makeFirstResponder(canvas)
@@ -149,6 +166,51 @@ public final class InPlaceAnnotator {
         let propertyX = min(max(edge, x), max(edge, bounds.width - edge - propertyWidth))
         properties.frame = CGRect(x: propertyX.rounded(), y: propertyY.rounded(),
                                   width: propertyWidth, height: height)
+    }
+
+    // MARK: - 选区调整
+
+    /// 选区被拖动或键盘调整后：重裁底图、改画布尺寸、平移已画图元、重排工具条。
+    ///
+    /// 冻结帧是整屏的，所以「换一块区域」只是一次零拷贝裁剪，不需要重新截屏；
+    /// 像素/点的比例也不变，标注样式不用重算。
+    private func adjustSelection(to global: CGRect) {
+        guard let result, let overlay, let canvas, let hostView else { return }
+        let old = result.screenRect
+        guard global != old, global.width >= 2, global.height >= 2 else { return }
+
+        let updated = CaptureResult(image: result.image,
+                                    pixelRect: CaptureGeometry.pixelRect(forGlobal: global,
+                                                                         in: result.display),
+                                    screenRect: global,
+                                    display: result.display,
+                                    action: result.action)
+        guard let cropped = updated.cropped,
+              let local = overlay.localRect(forGlobal: global,
+                                            displayID: result.display.displayID) else { return }
+
+        self.result = updated
+        self.image = cropped
+        scale = CGFloat(cropped.width) / max(local.width, 1)
+
+        // 标注存的是图片像素：裁剪原点挪了多少，全部图元就补多少
+        document.translateAll(dx: (global.minX - old.minX) * scale,
+                              dy: (global.minY - old.minY) * scale)
+
+        canvas.baseImage = cropped
+        canvas.selectionFrame = global
+        canvas.frame = local
+        canvas.needsDisplay = true
+
+        hostView.updateSelection(global)
+        layoutBars(around: local, in: hostView.bounds)
+        updateSelectionChrome(local)
+        ActionLog.action("overlay.adjustSelection",
+                         "x=\(Int(global.minX)) y=\(Int(global.minY)) w=\(Int(global.width)) h=\(Int(global.height))")
+    }
+
+    private func updateSelectionChrome(_ local: CGRect) {
+        selectionChrome.path = SelectionChrome.path(in: local)
     }
 
     private func refreshBar() {
@@ -349,6 +411,7 @@ public final class InPlaceAnnotator {
         canvas?.removeFromSuperview()
         bar?.removeFromSuperview()
         properties?.removeFromSuperview()
+        selectionChrome.removeFromSuperlayer()
         canvas = nil
         bar = nil
         properties = nil
@@ -363,6 +426,7 @@ public final class InPlaceAnnotator {
         canvas?.removeFromSuperview()
         bar?.removeFromSuperview()
         properties?.removeFromSuperview()
+        selectionChrome.removeFromSuperlayer()
         canvas = nil
         bar = nil
         properties = nil

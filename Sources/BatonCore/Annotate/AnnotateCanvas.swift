@@ -4,7 +4,10 @@ import CoreGraphics
 /// 标注画布。视图坐标 = 图片坐标 ÷ 缩放比，`isFlipped` 让两者同为左上原点。
 @MainActor
 public final class AnnotateCanvasView: NSView {
-    public let baseImage: CGImage
+    /// 底图。调整选区时会换成新裁剪的图，所以不是 let。
+    public var baseImage: CGImage {
+        didSet { needsDisplay = true }
+    }
     public let document: AnnotateDocument
     public var tool: AnnotateTool = .rectangle {
         didSet {
@@ -44,6 +47,21 @@ public final class AnnotateCanvasView: NSView {
     /// 悬停命中的图元；绘制中保持不动
     private(set) var hoveredID: UUID?
 
+    // MARK: - 选区调整
+
+    /// 选区本身可拖（只有原地标注模式下打开）。
+    public var adjustableSelection = false
+    /// 选区在屏幕全局坐标里的位置（左上原点，与 `CaptureSelection.globalRect` 同一套）。
+    /// 宿主每次调整完都会同步回来，所以这里读到的永远是「当前真实选区」。
+    public var selectionFrame: CGRect = .zero
+    /// 选区能扩到的范围（屏幕全局坐标）。
+    public var selectionLimit: CGRect = .zero
+    /// 选区被拖动/键盘调整后的新值（全局坐标）。宿主负责改画布 frame、重裁底图、平移标注。
+    public var onSelectionChange: ((CGRect) -> Void)?
+
+    private var activeAnchor: SelectionAnchor?
+    private var anchorDragStart: CGRect?
+
     /// 选中/悬停的高亮色，和 Longshot 的蓝色一致
     private static let accent = CGColor(srgbRed: 0.15, green: 0.51, blue: 0.96, alpha: 1)
 
@@ -56,7 +74,16 @@ public final class AnnotateCanvasView: NSView {
 
     private var currentCursor: NSCursor {
         if hoveredID != nil { return .openHand }
+        if adjustableSelection, let anchor = hoveredAnchor() { return anchor.cursor }
         return tool == .text || tool == .labelText ? .iBeam : .crosshair
+    }
+
+    /// 鼠标现在压着哪个选区手柄。取当前光标位置反查，供光标形状用。
+    private func hoveredAnchor() -> SelectionAnchor? {
+        guard let window else { return nil }
+        let inWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        return SelectionGeometry.anchor(at: convert(inWindow, from: nil),
+                                        in: bounds, tolerance: 6)
     }
 
     private var hoveredAnnotation: Annotation? {
@@ -162,7 +189,15 @@ public final class AnnotateCanvasView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         let imagePoint = imagePoint(point)
 
-        // 手柄优先，而且不挑工具：选中之后随时都能拖控制点改几何
+        // 选区手柄压在所有图元语义之上：它改的是「截哪块」，不是「画什么」
+        if adjustableSelection,
+           let anchor = SelectionGeometry.anchor(at: point, in: bounds, tolerance: 6) {
+            activeAnchor = anchor
+            anchorDragStart = selectionFrame
+            return
+        }
+
+        // 图元手柄次之，而且不挑工具：选中之后随时都能拖控制点改几何
         if let selected = document.selectedAnnotation,
            let handle = handleHit(at: point, annotation: selected) {
             document.beginTransaction()
@@ -238,6 +273,17 @@ public final class AnnotateCanvasView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         let imagePoint = imagePoint(point)
 
+        if let anchor = activeAnchor, let start = anchorDragStart {
+            let next = SelectionGeometry.resized(start, anchor: anchor,
+                                                 to: selectionPoint(point),
+                                                 limit: selectionLimit)
+            if next != selectionFrame {
+                selectionFrame = next
+                onSelectionChange?(next)
+            }
+            return
+        }
+
         if let handle = resizingHandle, let original = resizingOriginal {
             document.updateInPlace(original.resized(handle, to: imagePoint))
             needsDisplay = true
@@ -293,6 +339,12 @@ public final class AnnotateCanvasView: NSView {
     }
 
     public override func mouseUp(with event: NSEvent) {
+        if activeAnchor != nil {
+            activeAnchor = nil
+            anchorDragStart = nil
+            return
+        }
+
         if resizingOriginal != nil {
             document.endTransaction()
             resizingOriginal = nil
@@ -345,9 +397,17 @@ public final class AnnotateCanvasView: NSView {
     }
 
     public override func mouseMoved(with event: NSEvent) {
-        guard dragStart == nil, movingOriginal == nil, resizingOriginal == nil else { return }
-        setHovered(document.hitTest(imagePoint(convert(event.locationInWindow, from: nil)),
-                                    tolerance: 6 * pixelScale))
+        guard dragStart == nil, movingOriginal == nil, resizingOriginal == nil,
+              activeAnchor == nil else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        // 压着选区手柄时不做图元悬停：两个高亮同时出现会分不清在拖哪个
+        if adjustableSelection, SelectionGeometry.anchor(at: point, in: bounds, tolerance: 6) != nil {
+            setHovered(nil)
+            currentCursor.set()
+            return
+        }
+        setHovered(document.hitTest(imagePoint(point), tolerance: 6 * pixelScale))
+        currentCursor.set()
     }
 
     public override func mouseExited(with event: NSEvent) {
@@ -359,6 +419,57 @@ public final class AnnotateCanvasView: NSView {
         hoveredID = id
         needsDisplay = true
         window?.invalidateCursorRects(for: self)
+    }
+
+    // MARK: - 选区调整
+
+    /// 画布点 → 屏幕全局坐标。画布左上角与选区左上角重合，只差一个原点。
+    private func selectionPoint(_ point: CGPoint) -> CGPoint {
+        CGPoint(x: selectionFrame.minX + point.x, y: selectionFrame.minY + point.y)
+    }
+
+    private func applySelectionChange(_ next: CGRect) {
+        guard next != selectionFrame else { return }
+        selectionFrame = next
+        onSelectionChange?(next)
+    }
+
+    /// 方向键：有选中图元时移图元，否则移/扩缩选区。
+    ///
+    /// Longshot 的语义是「选中了元素就动元素，没选中就动捕获区域」，
+    /// 这里保持一致；两者互斥，不需要额外的模式。
+    private func handleArrow(keyCode: UInt16, command: Bool, shift: Bool) {
+        let dx: CGFloat
+        let dy: CGFloat
+        switch keyCode {
+        case 123: dx = -1; dy = 0
+        case 124: dx = 1; dy = 0
+        case 125: dx = 0; dy = 1
+        default:  dx = 0; dy = -1
+        }
+
+        if let id = document.selection,
+           let original = document.annotations.first(where: { $0.id == id }) {
+            // ⌘ 留给选区扩缩，不参与图元移动
+            guard !command else { return }
+            let step: CGFloat = shift ? 10 * pixelScale : pixelScale
+            var moved = original
+            moved.offsetBy(dx: dx * step, dy: dy * step)
+            document.replace(moved)
+            needsDisplay = true
+            return
+        }
+
+        guard adjustableSelection else { return }
+        if let edge = SelectionGeometry.edge(forKeyCode: keyCode, command: command, shift: shift) {
+            // ⌘ 外扩、⇧ 收缩，每次 1pt
+            applySelectionChange(SelectionGeometry.inset(selectionFrame, edge: edge,
+                                                          by: command ? 1 : -1,
+                                                          limit: selectionLimit))
+        } else if !command && !shift {
+            applySelectionChange(SelectionGeometry.moved(selectionFrame, dx: dx, dy: dy,
+                                                          limit: selectionLimit))
+        }
     }
 
     /// 落一个新图元。
@@ -588,6 +699,15 @@ public final class AnnotateCanvasView: NSView {
             return
         }
 
+        // 方向键的 ⌘ / ⇧ 有独立语义（扩缩选区），必须在 command 分支之前截走，
+        // 否则 ⌘← 会被当成未知命令丢给 super。
+        if [123, 124, 125, 126].contains(event.keyCode) {
+            handleArrow(keyCode: event.keyCode,
+                        command: event.modifierFlags.contains(.command),
+                        shift: event.modifierFlags.contains(.shift))
+            return
+        }
+
         if event.modifierFlags.contains(.command) {
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "z":
@@ -625,21 +745,6 @@ public final class AnnotateCanvasView: NSView {
                 needsDisplay = true
                 onChange?()
             }
-            return
-        case 123, 124, 125, 126: // ← → ↓ ↑
-            // Longshot: 方向键移动选中元素 1 个像素
-            guard let id = document.selection,
-                  let original = document.annotations.first(where: { $0.id == id }) else { return }
-            let step: CGFloat = event.modifierFlags.contains(.shift) ? 10 * pixelScale : pixelScale
-            var moved = original
-            switch event.keyCode {
-            case 123: moved.offsetBy(dx: -step, dy: 0)
-            case 124: moved.offsetBy(dx: step, dy: 0)
-            case 125: moved.offsetBy(dx: 0, dy: step)
-            default: moved.offsetBy(dx: 0, dy: -step)
-            }
-            document.replace(moved)
-            needsDisplay = true
             return
         default:
             break
@@ -716,4 +821,17 @@ public final class AnnotateCanvasView: NSView {
 
 extension AnnotateDocument {
     // 撤销栈操作在模型里，画布只负责转发
+}
+
+private extension SelectionAnchor {
+    /// 拖不同边给不同光标。macOS 没有公开的对角缩放光标（只有私有的
+    /// `_windowResizeNorthWestSouthEastCursor`），角上用十字保持「精准」的手感，
+    /// 硬塞一个横向光标反而会让人以为只能左右拖。
+    var cursor: NSCursor {
+        switch self {
+        case .left, .right: return .resizeLeftRight
+        case .top, .bottom: return .resizeUpDown
+        default: return .crosshair
+        }
+    }
 }
