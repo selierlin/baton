@@ -708,6 +708,12 @@ public final class AnnotateCanvasView: NSView {
             return
         }
 
+        // ⌥Q 走 keyCode：Option 会把字符改成特殊符号，靠 characters 认不出来
+        if event.modifierFlags.contains(.option), event.keyCode == 12 { // Q
+            onCommand?(.qr)
+            return
+        }
+
         if event.modifierFlags.contains(.command) {
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "z":
@@ -720,6 +726,9 @@ public final class AnnotateCanvasView: NSView {
                 onCommand?(.save)
             case "w":
                 onCommand?(.cancel)
+            case "r":
+                // ⌘R：识别并复制，不弹面板
+                onCommand?(.ocr(silent: true))
             default:
                 super.keyDown(with: event)
             }
@@ -756,10 +765,13 @@ public final class AnnotateCanvasView: NSView {
             return
         }
 
-        // P = 贴到屏幕（Longshot 同款）
-        if character == "p" {
-            onCommand?(.pin)
-            return
+        // 无修饰单键：贴图 / 打开 / 隔空投送 / 识别（Longshot 同款）
+        switch character {
+        case "p": onCommand?(.pin); return
+        case "o": onCommand?(.open); return
+        case "a": onCommand?(.airDrop); return
+        case "r": onCommand?(.ocr(silent: false)); return
+        default: break
         }
 
         // 1…8 对应一条工具组；连按同一个键在组内轮换（Longshot: 连续按切换）

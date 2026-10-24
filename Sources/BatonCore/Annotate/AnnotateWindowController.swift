@@ -268,6 +268,11 @@ public final class AnnotateWindowController: NSObject, NSWindowDelegate {
             finish(.pinned)
         case .cancel:
             finish(.cancelled)
+
+        // 识别 / 打开 / 隔空投送只在「原地标注」里有意义（那边有整场截图会话），
+        // 独立弹窗只是一张图，没有可交出去的流程
+        case .ocr, .qr, .open, .airDrop:
+            break
         }
     }
 

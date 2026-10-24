@@ -95,8 +95,8 @@ public final class AppShell: NSObject {
         inPlace.onExternal = { [weak self] request in
             guard let self else { return }
             switch request {
-            case .ocr(let image):
-                Task { await self.translator?.recognize(image: image, silent: false) }
+            case .ocr(let image, let silent):
+                Task { await self.translator?.recognize(image: image, silent: silent) }
             case .scroll(let result):
                 Task { await self.runScroll(from: result) }
             }

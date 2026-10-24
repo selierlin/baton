@@ -660,6 +660,12 @@ public enum AnnotateCommand: Sendable, Hashable {
     case save
     case pin
     case cancel
+    /// 交给外部流程的终态动作（识别 / 打开 / 隔空投送）。
+    /// `silent` 对应 Longshot 的 R 与 ⌘R：都进剪贴板，区别只在弹不弹面板。
+    case ocr(silent: Bool)
+    case qr
+    case open
+    case airDrop
 }
 
 /// 标注文档：只存值，撤销用快照栈。

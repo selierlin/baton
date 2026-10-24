@@ -382,9 +382,10 @@ final class AnnotateBarView: NSView {
         menu.addItem(select)
 
         menu.addItem(.separator())
-        menu.addItem(menuItem("QR 解码", symbol: "qrcode", action: #selector(menuQR)))
-        menu.addItem(menuItem("打开", symbol: "arrow.up.forward.app", action: #selector(menuOpen)))
-        menu.addItem(menuItem("隔空投送", symbol: "paperplane", action: #selector(menuAirDrop)))
+        // 键位写在标题里而不是 keyEquivalent：菜单只是展示，别真去抢键盘
+        menu.addItem(menuItem("QR 解码  ⌥Q", symbol: "qrcode", action: #selector(menuQR)))
+        menu.addItem(menuItem("打开  O", symbol: "arrow.up.forward.app", action: #selector(menuOpen)))
+        menu.addItem(menuItem("隔空投送  A", symbol: "paperplane", action: #selector(menuAirDrop)))
 
         menu.addItem(.separator())
         menu.addItem(menuItem("保存并复制", symbol: "square.and.arrow.down.on.square",

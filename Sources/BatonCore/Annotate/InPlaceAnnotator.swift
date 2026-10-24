@@ -19,7 +19,7 @@ public final class InPlaceAnnotator {
 
     /// 工具条上需要跳出标注流程的两个动作。
     public enum ExternalRequest {
-        case ocr(CGImage)
+        case ocr(CGImage, silent: Bool)
         case scroll(CaptureResult)
     }
 
@@ -354,6 +354,21 @@ public final class InPlaceAnnotator {
 
         case .cancel:
             finish(.cancelled)
+
+        case .ocr(let silent):
+            guard let flat = flattened() else { return }
+            // 先把图交出去，再撤覆盖层：识别面板不吃覆盖层的层级
+            finish(.handedOff)
+            onExternal?(.ocr(flat, silent: silent))
+
+        case .qr:
+            handleMenu(.qr)
+
+        case .open:
+            handleMenu(.open)
+
+        case .airDrop:
+            handleMenu(.airDrop)
         }
     }
 
@@ -363,7 +378,7 @@ public final class InPlaceAnnotator {
             guard let flat = flattened() else { return }
             // 先把图交出去，再撤覆盖层：识别面板不吃覆盖层的层级
             finish(.handedOff)
-            onExternal?(.ocr(flat))
+            onExternal?(.ocr(flat, silent: false))
 
         case .scroll:
             guard let result else { return }
