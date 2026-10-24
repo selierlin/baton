@@ -158,7 +158,7 @@ public final class AnnotateCanvasView: NSView {
             counterNumberOverride = nil
             let annotation = Annotation(kind: .counter(center: imagePoint, number: number),
                                         style: style, tool: .counter)
-            document.add(annotation)
+            place(annotation)
             needsDisplay = true
             onChange?()
 
@@ -233,12 +233,21 @@ public final class AnnotateCanvasView: NSView {
         if draft.bounds.width > 2 || draft.bounds.height > 2 || tool.isFreehand {
             var finished = draft
             finished.tool = tool
-            document.add(finished)
+            place(finished)
         }
         self.draft = nil
         dragStart = nil
         needsDisplay = true
         onChange?()
+    }
+
+    /// 落一个新图元。
+    ///
+    /// 绘制工具下不保留选中态：选中框是选择工具的语义（Longshot 也只在选中时出现），
+    /// 画完还留着的话，箭头、直线这种斜向图元外面会多出一个外接四边形虚线框。
+    private func place(_ annotation: Annotation) {
+        document.add(annotation)
+        if tool != .select { document.select(nil) }
     }
 
     private func makeAnnotation(from start: CGPoint, to end: CGPoint, shift: Bool) -> Annotation {
@@ -444,7 +453,7 @@ public final class AnnotateCanvasView: NSView {
             annotation = Annotation(kind: .labelText(origin: origin, string: text),
                                     style: usedStyle, tool: .labelText)
         }
-        document.add(annotation)
+        place(annotation)
         pendingTextKind = .plain
         needsDisplay = true
         onChange?()
