@@ -480,6 +480,96 @@ public struct Annotation: Identifiable, Codable, Sendable, Equatable {
         isLineLike ? SelectionHandle.line : SelectionHandle.square
     }
 
+    /// 有可拖拽的控制点。文字、序号这类只有位置没有尺寸的图元不给手柄，
+    /// 免得画出点不动的死手柄。
+    public var supportsResize: Bool {
+        switch kind {
+        case .rectangle, .ellipse, .mosaic, .mosaicEllipse, .highlight, .area,
+             .line, .arrow, .ruler, .length:
+            return true
+        case .stroke, .mosaicStroke, .text, .labelText, .counter:
+            return false
+        }
+    }
+
+    public var editableHandles: [SelectionHandle] {
+        supportsResize ? handles : []
+    }
+
+    /// 命中测试按**图元本身的几何**判，不用外接矩形。
+    ///
+    /// 斜着的箭头外接框很大，用矩形判会把框里的空白处也算命中——那地方正是
+    /// 用户想再画一条箭头的地方。闭合形状内部算命中：按下不动是选中，
+    /// 拖起来照常画新图元，两种意图由手势分开。
+    public func contains(_ point: CGPoint, tolerance: CGFloat) -> Bool {
+        let slack = max(tolerance, 1)
+        switch kind {
+        case .line(let start, let end), .ruler(let start, let end), .length(let start, let end):
+            let reach = max(slack, style.lineWidth / 2 + 1)
+            return Self.distance(point, toSegment: start, end) <= reach
+
+        case .arrow(let start, let end, _):
+            // 箭头头部比线宽宽得多，按线宽 2.5 倍的头部半宽放宽
+            let reach = max(slack, style.lineWidth * 1.6)
+            return Self.distance(point, toSegment: start, end) <= reach
+
+        case .stroke(let points):
+            return Self.hitsStroke(points, point: point, reach: max(slack, style.lineWidth / 2))
+
+        case .mosaicStroke(let points):
+            return Self.hitsStroke(points, point: point,
+                                   reach: max(slack, max(style.lineWidth * 5, 24) / 2))
+
+        case .rectangle(let rect), .mosaic(let rect), .area(let rect):
+            return rect.insetBy(dx: -slack, dy: -slack).contains(point)
+
+        case .ellipse(let rect), .mosaicEllipse(let rect):
+            return Self.hitsEllipse(rect, point: point, slack: slack)
+
+        case .highlight(let rect, let ellipse):
+            if ellipse { return Self.hitsEllipse(rect, point: point, slack: slack) }
+            return rect.insetBy(dx: -slack, dy: -slack).contains(point)
+
+        case .text(let origin, let string), .labelText(let origin, let string):
+            let size = AnnotateRenderer.textSize(string, style: style)
+            return CGRect(origin: origin, size: size)
+                .insetBy(dx: -slack, dy: -slack).contains(point)
+
+        case .counter(let center, _):
+            let radius = AnnotateRenderer.counterRadius(style: style)
+            return hypot(point.x - center.x, point.y - center.y) <= radius + slack
+        }
+    }
+
+    private static func hitsEllipse(_ rect: CGRect, point: CGPoint, slack: CGFloat) -> Bool {
+        let rx = rect.width / 2 + slack
+        let ry = rect.height / 2 + slack
+        guard rx > 0, ry > 0 else { return false }
+        let dx = (point.x - rect.midX) / rx
+        let dy = (point.y - rect.midY) / ry
+        return hypot(dx, dy) <= 1
+    }
+
+    private static func hitsStroke(_ points: [CGPoint], point: CGPoint, reach: CGFloat) -> Bool {
+        guard let first = points.first else { return false }
+        guard points.count > 1 else { return hypot(point.x - first.x, point.y - first.y) <= reach }
+        var previous = first
+        for current in points.dropFirst() {
+            if distance(point, toSegment: previous, current) <= reach { return true }
+            previous = current
+        }
+        return false
+    }
+
+    private static func distance(_ point: CGPoint, toSegment a: CGPoint, _ b: CGPoint) -> CGFloat {
+        let dx = b.x - a.x
+        let dy = b.y - a.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 0 else { return hypot(point.x - a.x, point.y - a.y) }
+        let t = max(0, min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared))
+        return hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy))
+    }
+
     public func handlePoint(_ handle: SelectionHandle) -> CGPoint {
         switch kind {
         case .line(let start, let end), .arrow(let start, let end, _),
@@ -688,7 +778,7 @@ public final class AnnotateDocument {
 
     /// 命中测试：从最后画的往前找，压在上面的优先。
     public func hitTest(_ point: CGPoint, tolerance: CGFloat = 6) -> UUID? {
-        for annotation in annotations.reversed() where annotation.bounds.insetBy(dx: -tolerance, dy: -tolerance).contains(point) {
+        for annotation in annotations.reversed() where annotation.contains(point, tolerance: tolerance) {
             return annotation.id
         }
         return nil

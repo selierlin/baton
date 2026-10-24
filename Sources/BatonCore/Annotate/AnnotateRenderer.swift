@@ -56,19 +56,16 @@ public enum AnnotateRenderer {
     public static func draw(_ annotations: [Annotation],
                             in context: CGContext,
                             imageSize: CGSize,
-                            mosaicSource: CGImage?,
-                            selection: UUID? = nil) {
+                            mosaicSource: CGImage?) {
         for annotation in annotations {
-            draw(annotation, in: context, imageSize: imageSize,
-                 mosaicSource: mosaicSource, selected: annotation.id == selection)
+            draw(annotation, in: context, imageSize: imageSize, mosaicSource: mosaicSource)
         }
     }
 
     public static func draw(_ annotation: Annotation,
                             in context: CGContext,
                             imageSize: CGSize,
-                            mosaicSource: CGImage?,
-                            selected: Bool = false) {
+                            mosaicSource: CGImage?) {
         context.saveGState()
         defer { context.restoreGState() }
 
@@ -169,16 +166,43 @@ public enum AnnotateRenderer {
         case .ruler(let start, let end):
             drawRuler(context, start: start, end: end, style: annotation.style)
         }
+    }
 
-        if selected {
-            // 选中框：细虚线，避开标注本身的颜色
-            context.saveGState()
-            context.setStrokeColor(CGColor(srgbRed: 0.15, green: 0.51, blue: 0.96, alpha: 0.9))
-            context.setLineWidth(max(1, annotation.style.lineWidth * 0.4))
-            context.setLineDash(phase: 0, lengths: [6, 4])
-            context.stroke(annotation.bounds)
-            context.restoreGState()
+    /// 选中/悬停轮廓：贴着图元自己的几何走，而不是外接矩形。
+    ///
+    /// 箭头、直线这类斜向图元如果用外接矩形，斜线外面会多出一个四边形框，
+    /// Longshot 只在图形本身和首尾两点上给反馈。
+    /// - Parameter padding: 向外扩出的量（图片像素），让轮廓落在图形外面而不是压在身上
+    public static func outlinePath(for annotation: Annotation, padding: CGFloat = 0) -> CGPath {
+        let path = CGMutablePath()
+        switch annotation.kind {
+        case .rectangle(let rect):
+            let box = rect.insetBy(dx: -padding, dy: -padding)
+            let radius = min(annotation.style.cornerRadius, min(rect.width, rect.height) / 2)
+            path.addRoundedRect(in: box, cornerWidth: radius, cornerHeight: radius)
+        case .ellipse(let rect), .mosaicEllipse(let rect):
+            path.addEllipse(in: rect.insetBy(dx: -padding, dy: -padding))
+        case .mosaic(let rect), .area(let rect):
+            path.addRect(rect.insetBy(dx: -padding, dy: -padding))
+        case .highlight(let rect, let ellipse):
+            let box = rect.insetBy(dx: -padding, dy: -padding)
+            if ellipse { path.addEllipse(in: box) } else { path.addRect(box) }
+        case .line(let start, let end), .arrow(let start, let end, _),
+             .ruler(let start, let end), .length(let start, let end):
+            path.move(to: start)
+            path.addLine(to: end)
+        case .stroke(let points), .mosaicStroke(let points):
+            guard let first = points.first else { break }
+            path.move(to: first)
+            if points.count > 1 {
+                for point in points.dropFirst() { path.addLine(to: point) }
+            } else {
+                path.addLine(to: CGPoint(x: first.x + 0.1, y: first.y))
+            }
+        case .text, .labelText, .counter:
+            path.addRect(annotation.bounds.insetBy(dx: -padding, dy: -padding))
         }
+        return path
     }
 
     /// 直线/箭头的虚线：间隔按线宽走，粗线也不会连成一坨。

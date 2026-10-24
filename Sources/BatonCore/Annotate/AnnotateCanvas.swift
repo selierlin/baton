@@ -33,18 +33,35 @@ public final class AnnotateCanvasView: NSView {
 
     private var dragStart: CGPoint?
     private var draft: Annotation?
+    /// 按下时压着的图元：抬手前没拖动就是「单击选中」，拖起来则照常画新图元。
+    private var pendingSelect: UUID?
     private var movingOriginal: Annotation?
     private var movingStart: CGPoint?
     private var resizingOriginal: Annotation?
     private var resizingHandle: SelectionHandle?
     private var editingID: UUID?
     private var textField: NSTextField?
+    /// 悬停命中的图元；绘制中保持不动
+    private(set) var hoveredID: UUID?
+
+    /// 选中/悬停的高亮色，和 Longshot 的蓝色一致
+    private static let accent = CGColor(srgbRed: 0.15, green: 0.51, blue: 0.96, alpha: 1)
 
     public override var isFlipped: Bool { true }
     public override var acceptsFirstResponder: Bool { true }
 
     public override func resetCursorRects() {
-        addCursorRect(bounds, cursor: tool == .text ? .iBeam : .crosshair)
+        addCursorRect(bounds, cursor: currentCursor)
+    }
+
+    private var currentCursor: NSCursor {
+        if hoveredID != nil { return .openHand }
+        return tool == .text || tool == .labelText ? .iBeam : .crosshair
+    }
+
+    private var hoveredAnnotation: Annotation? {
+        guard let hoveredID else { return nil }
+        return document.annotations.first { $0.id == hoveredID }
     }
 
     public init(image: CGImage, document: AnnotateDocument = AnnotateDocument(), style: AnnotateStyle) {
@@ -74,20 +91,51 @@ public final class AnnotateCanvasView: NSView {
         context.saveGState()
         context.scaleBy(x: scale, y: scale)
         AnnotateRenderer.draw(document.annotations, in: context, imageSize: imageSize,
-                              mosaicSource: baseImage, selection: document.selection)
+                              mosaicSource: baseImage)
         if let draft {
             AnnotateRenderer.draw(draft, in: context, imageSize: imageSize, mosaicSource: baseImage)
         }
         context.restoreGState()
 
-        if tool == .select, let selected = document.selectedAnnotation {
+        // 悬停：淡一点，告诉用户这里可以点
+        if let hovered = hoveredAnnotation, hovered.id != document.selection {
+            drawChrome(hovered, scale: scale, selected: false, context: context)
+        }
+        if let selected = document.selectedAnnotation {
+            drawChrome(selected, scale: scale, selected: true, context: context)
             drawHandles(for: selected, scale: scale, context: context)
         }
     }
 
+    /// 选中/悬停的辅助图形，画在视图坐标里（线宽不随截图倍率变粗）。
+    ///
+    /// 闭合形状用外扩一圈的轮廓，线类改用加宽的光晕：线类没有「内部」，
+    /// 轮廓只能压在杆上，会把箭头本身的颜色染蓝。
+    private func drawChrome(_ annotation: Annotation, scale: CGFloat,
+                            selected: Bool, context: CGContext) {
+        var transform = CGAffineTransform(scaleX: scale, y: scale)
+        let padding = annotation.style.lineWidth / 2 + 2
+        guard let path = AnnotateRenderer.outlinePath(for: annotation, padding: padding)
+            .copy(using: &transform) else { return }
+
+        context.saveGState()
+        context.setLineCap(.round)
+        if annotation.isLineLike {
+            context.setStrokeColor(Self.accent.copy(alpha: selected ? 0.26 : 0.20)!)
+            context.setLineWidth(annotation.style.lineWidth * scale + (selected ? 5 : 8))
+        } else {
+            context.setStrokeColor(Self.accent.copy(alpha: selected ? 1 : 0.6)!)
+            context.setLineWidth(1)
+            if !selected { context.setLineDash(phase: 0, lengths: [4, 3]) }
+        }
+        context.addPath(path)
+        context.strokePath()
+        context.restoreGState()
+    }
+
     /// 选中手柄画在视图坐标里，尺寸才不会随 2x 截图放大。
     private func drawHandles(for annotation: Annotation, scale: CGFloat, context: CGContext) {
-        for handle in annotation.handles {
+        for handle in annotation.editableHandles {
             let point = annotation.handlePoint(handle)
             let center = CGPoint(x: point.x * scale, y: point.y * scale)
             let rect = CGRect(x: center.x - 3.5, y: center.y - 3.5, width: 7, height: 7)
@@ -114,6 +162,15 @@ public final class AnnotateCanvasView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         let imagePoint = imagePoint(point)
 
+        // 手柄优先，而且不挑工具：选中之后随时都能拖控制点改几何
+        if let selected = document.selectedAnnotation,
+           let handle = handleHit(at: point, annotation: selected) {
+            document.beginTransaction()
+            resizingOriginal = selected
+            resizingHandle = handle
+            return
+        }
+
         switch tool {
         case .select:
             // 双击文字：进入编辑
@@ -122,15 +179,6 @@ public final class AnnotateCanvasView: NSView {
                let annotation = document.annotations.first(where: { $0.id == id }),
                annotation.tool == .text || annotation.tool == .labelText {
                 startEditing(annotation)
-                return
-            }
-
-            // 先判手柄，再判图元本体
-            if let selected = document.selectedAnnotation,
-               let handle = handleHit(at: point, annotation: selected) {
-                document.beginTransaction()
-                resizingOriginal = selected
-                resizingHandle = handle
                 return
             }
 
@@ -167,7 +215,22 @@ public final class AnnotateCanvasView: NSView {
 
         default:
             dragStart = imagePoint
-            draft = makeAnnotation(from: imagePoint, to: imagePoint, shift: event.modifierFlags.contains(.shift))
+            draft = nil
+            // 压在已有图元上时先不落笔：抬手算单击选中，拖起来才算画新的。
+            // 已经选中的那个例外——直接进入整体拖动。
+            if let id = document.hitTest(imagePoint, tolerance: 6 * pixelScale) {
+                if id == document.selection {
+                    document.beginTransaction()
+                    movingOriginal = document.annotations.first { $0.id == id }
+                    movingStart = imagePoint
+                    dragStart = nil
+                    return
+                }
+                pendingSelect = id
+            } else if document.selection != nil {
+                document.select(nil)
+                onChange?()
+            }
         }
     }
 
@@ -190,6 +253,24 @@ public final class AnnotateCanvasView: NSView {
         }
 
         guard let dragStart else { return }
+
+        if draft == nil {
+            // 还压在手势判定的死区里：继续等，别把单击变成 0 尺寸图元
+            if pendingSelect != nil,
+               hypot(imagePoint.x - dragStart.x, imagePoint.y - dragStart.y) < 2 * pixelScale {
+                return
+            }
+            if pendingSelect != nil {
+                pendingSelect = nil
+                document.select(nil)
+                onChange?()
+            }
+            draft = makeAnnotation(from: dragStart, to: imagePoint,
+                                   shift: event.modifierFlags.contains(.shift))
+            needsDisplay = true
+            return
+        }
+
         if tool.isFreehand, var draft, case .stroke(var points) = draft.kind {
             // 采样抽稀：距离小于线宽一半的点不记，省内存也免得曲线发抖
             if let last = points.last,
@@ -228,23 +309,62 @@ public final class AnnotateCanvasView: NSView {
             return
         }
 
-        guard let draft else { return }
-        // 单击（无拖动）不留下 0 尺寸图元
-        if draft.bounds.width > 2 || draft.bounds.height > 2 || tool.isFreehand {
-            var finished = draft
-            finished.tool = tool
-            place(finished)
+        if let draft {
+            // 单击（无拖动）不留下 0 尺寸图元
+            if draft.bounds.width > 2 || draft.bounds.height > 2 || tool.isFreehand {
+                var finished = draft
+                finished.tool = tool
+                place(finished)
+            }
+        } else if let pendingSelect {
+            // 按下→抬起没移动：这次点击是选中已有图元
+            document.select(pendingSelect)
         }
         self.draft = nil
         dragStart = nil
+        pendingSelect = nil
         needsDisplay = true
         onChange?()
     }
 
+    // MARK: - 悬停
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // 悬停反馈靠 mouseMoved，窗口默认不产生这个事件
+        window?.acceptsMouseMovedEvents = true
+    }
+
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: .zero,
+                                       options: [.mouseMoved, .mouseEnteredAndExited,
+                                                 .activeInKeyWindow, .inVisibleRect],
+                                       owner: self, userInfo: nil))
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        guard dragStart == nil, movingOriginal == nil, resizingOriginal == nil else { return }
+        setHovered(document.hitTest(imagePoint(convert(event.locationInWindow, from: nil)),
+                                    tolerance: 6 * pixelScale))
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        setHovered(nil)
+    }
+
+    private func setHovered(_ id: UUID?) {
+        guard id != hoveredID else { return }
+        hoveredID = id
+        needsDisplay = true
+        window?.invalidateCursorRects(for: self)
+    }
+
     /// 落一个新图元。
     ///
-    /// 绘制工具下不保留选中态：选中框是选择工具的语义（Longshot 也只在选中时出现），
-    /// 画完还留着的话，箭头、直线这种斜向图元外面会多出一个外接四边形虚线框。
+    /// 绘制工具下落笔不自动选中：刚画完还挂着选中框，等于每个图元都拖一条尾巴。
+    /// 想改它，鼠标移上去（有悬停反馈）单击即可。
     private func place(_ annotation: Annotation) {
         document.add(annotation)
         if tool != .select { document.select(nil) }
@@ -403,7 +523,7 @@ public final class AnnotateCanvasView: NSView {
     }
 
     private func handleHit(at point: CGPoint, annotation: Annotation) -> SelectionHandle? {
-        for handle in annotation.handles {
+        for handle in annotation.editableHandles {
             let image = annotation.handlePoint(handle)
             let center = CGPoint(x: image.x / pixelScale, y: image.y / pixelScale)
             if hypot(center.x - point.x, center.y - point.y) <= 7 {
