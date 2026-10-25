@@ -82,7 +82,7 @@ final class PinAnnotator {
             isEditing = false
             canvas?.commitPendingText()
             canvas?.interactive = false
-            if let hostWindow { panel.orderOut(nil) }
+            panel.orderOut(nil)
             onEditingChange?(false)
         }
     }

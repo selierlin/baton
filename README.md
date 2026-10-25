@@ -385,6 +385,8 @@ BATON_STITCH_DEBUG=1 ...                    # 逐帧打印 adv/back/still/miss
 
 **⌥⌘P** 把当前截图钉在屏幕上。滚轮 0.25–4× 缩放，双击在「100% ⇄ 适配屏幕」间切换，右键菜单给倍率/不透明度/置顶/复制/关闭，`Esc` 关。
 按窗口设备像素重采样（不是把原图直接缩），落库后原图释放，显示走子采样解码。
+释放前必须先把 blob 接回 `PinImageSource`（`adopt(fileURL:)`）：没有文件兜底时
+`releaseOriginal()` 不清空，否则换个缩放档位就只剩透明边框、空格也建不出画布。
 
 钉住的图还能继续标注（Longshot 的 `pasteToolbarItemsRawValue` 那套）：
 

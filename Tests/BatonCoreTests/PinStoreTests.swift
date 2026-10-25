@@ -1,4 +1,5 @@
 import CoreGraphics
+import ImageIO
 import XCTest
 @testable import BatonCore
 
@@ -106,6 +107,21 @@ final class PinStoreTests: XCTestCase {
                                screenUUID: nil, opacity: 1)
         pins.updateOpacity(id: id, opacity: 0.6)
         XCTAssertEqual(pins.loadAll().first?.opacity ?? 0, 0.6, accuracy: 0.001)
+    }
+
+    /// 落库返回的 blob 是「丢掉内存原图」的唯一依据，必须能直接拿来解码
+    func testBlobURLForPinID() throws {
+        let (_, pins) = try makeStore()
+        let id = try pins.save(image: makeImage(width: 64, height: 48), scale: 2,
+                               frame: CGRect(x: 0, y: 0, width: 32, height: 24), screenUUID: nil)
+
+        let url = try XCTUnwrap(pins.blobURL(forPinID: id))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        let source = CGImageSourceCreateWithURL(url as CFURL, nil)
+        let image = try XCTUnwrap(source.flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) })
+        XCTAssertEqual(image.width, 64, "blob 里应该是原图，不是窗口显示用的缩略图")
+
+        XCTAssertNil(pins.blobURL(forPinID: "no-such-pin"))
     }
 
     func testFrameCodecHandlesNegativeOrigin() {

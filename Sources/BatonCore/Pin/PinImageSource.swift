@@ -16,7 +16,7 @@ public final class PinImageSource: @unchecked Sendable {
 
     private let lock = NSLock()
     private var original: CGImage?
-    private let fileURL: URL?
+    private var fileURL: URL?
     /// 只缓存当前尺寸：缩放时桶会跳几次，换桶才重新解码。
     private var cached: (bucket: Int, image: CGImage)?
 
@@ -34,10 +34,21 @@ public final class PinImageSource: @unchecked Sendable {
         self.fileURL = fileURL
     }
 
+    /// 落库后把 blob 接上：此后显示按桶子采样解码、导出解原图。
+    public func adopt(fileURL: URL) {
+        lock.lock()
+        self.fileURL = fileURL
+        lock.unlock()
+    }
+
     /// 落库成功后调用：内存里的原图没有留下的理由了。
+    ///
+    /// 没有文件兜底就**不清**。新钉的图落库时如果只清内存、没接上 blob，
+    /// 之后换一个显示桶就整块空白（缩一次放一次，贴图就剩个透明框），
+    /// 空格开标注也建不出画布——`full()` 是 nil。宁可多留一份内存。
     public func releaseOriginal() {
         lock.lock()
-        original = nil
+        if fileURL != nil { original = nil }
         lock.unlock()
     }
 

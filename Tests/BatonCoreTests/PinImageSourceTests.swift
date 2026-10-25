@@ -65,11 +65,26 @@ final class PinImageSourceTests: XCTestCase {
         let source = PinImageSource(image: makeImage(width: 800, height: 600))
         source.releaseOriginal()
 
-        // 只有内存图的来源，原图丢了就取不回来
-        XCTAssertNil(source.full())
+        // 只有内存图的来源，原图丢了就取不回来——所以下面这条要是没兜住，
+        // 调用方就别丢（`releaseOriginal` 没 blob 时不清空）
+        XCTAssertNotNil(source.full(), "没有文件兜底时不能把唯一的内存原图丢掉")
 
         let backed = PinImageSource(pixelSize: CGSize(width: 800, height: 600), fileURL: url)
         XCTAssertEqual(backed.full()?.width, 800)
+    }
+
+    /// 落库 → 接上 blob → 丢原图：之后换显示桶仍要能解出图，导出也要能回原图
+    func testAdoptedBlobServesDisplayAndExportAfterRelease() throws {
+        let url = try writePNG(makeImage(width: 1600, height: 1200))
+        let source = PinImageSource(image: makeImage(width: 1600, height: 1200))
+        source.adopt(fileURL: url)
+        source.releaseOriginal()
+
+        // 先取一次原桶（可能走缓存），再换桶逼它重新解码
+        _ = source.display(maxPixel: 300)
+        let display = source.display(maxPixel: 900)
+        XCTAssertEqual(max(display?.width ?? 0, display?.height ?? 0), 1024, "桶按 256 向上取整")
+        XCTAssertEqual(source.full()?.width, 1600)
     }
 
     /// 同一桶内重复取图走缓存，不重复解码

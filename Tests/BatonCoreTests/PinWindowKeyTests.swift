@@ -11,25 +11,42 @@ import XCTest
 final class PinWindowKeyTests: XCTestCase {
     private var controller: PinWindowController!
     private var closed = false
+    private var databaseDirectory: URL?
 
-    private func makePin(width: CGFloat = 400, height: CGFloat = 200) -> (PinWindowController, CGImage) {
+    override func tearDownWithError() throws {
+        controller?.close()
+        controller = nil
+        if let databaseDirectory { try? FileManager.default.removeItem(at: databaseDirectory) }
+    }
+
+    private func makePin(width: CGFloat = 400, height: CGFloat = 200,
+                         withStore: Bool = false) throws -> (PinWindowController, CGImage) {
         let context = CGContext(data: nil, width: Int(width), height: Int(height),
                                 bitsPerComponent: 8, bytesPerRow: 0,
                                 space: CGColorSpaceCreateDeviceRGB(),
                                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
         context.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        return (makeController(image: context.makeImage()!), context.makeImage()!)
+
+        var store: PinStore?
+        if withStore {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("baton-pin-window-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            databaseDirectory = directory
+            store = PinStore(clipboard: ClipboardStore(database: try BatonDatabase(directory: directory)))
+        }
+        return (makeController(image: context.makeImage()!, store: store), context.makeImage()!)
     }
 
-    private func makeController(image: CGImage) -> PinWindowController {
+    private func makeController(image: CGImage, store: PinStore? = nil) -> PinWindowController {
         closed = false
         let controller = PinWindowController(source: PinImageSource(image: image),
                                              scale: 1,
                                              anchor: nil,
                                              initialFrame: nil,
                                              opacity: 1,
-                                             store: nil,
+                                             store: store,
                                              pinID: nil,
                                              onClose: { [weak self] _ in self?.closed = true })
         controller.show()
@@ -44,8 +61,8 @@ final class PinWindowKeyTests: XCTestCase {
                          charactersIgnoringModifiers: "", isARepeat: false, keyCode: keyCode)!
     }
 
-    func testSpaceOpensAndClosesEditing() {
-        let (controller, _) = makePin()
+    func testSpaceOpensAndClosesEditing() throws {
+        let (controller, _) = try makePin()
         XCTAssertFalse(controller.debugEditing)
         XCTAssertFalse(controller.debugBarVisible)
 
@@ -59,8 +76,8 @@ final class PinWindowKeyTests: XCTestCase {
     }
 
     /// 第一次 Esc 只退编辑，别把整张贴图带走
-    func testEscapeLeavesEditingBeforeClosing() {
-        let (controller, _) = makePin()
+    func testEscapeLeavesEditingBeforeClosing() throws {
+        let (controller, _) = try makePin()
         controller.handleKey(key(49))
 
         XCTAssertTrue(controller.handleKey(key(53)))
@@ -71,8 +88,8 @@ final class PinWindowKeyTests: XCTestCase {
         XCTAssertTrue(closed, "只读态再按 Esc 才退出贴图")
     }
 
-    func testThumbnailShrinksAndRestores() {
-        let (controller, _) = makePin(width: 800, height: 400)
+    func testThumbnailShrinksAndRestores() throws {
+        let (controller, _) = try makePin(width: 800, height: 400)
         let normal = controller.debugFrame
         let longest = max(normal.width, normal.height)
 
@@ -88,15 +105,15 @@ final class PinWindowKeyTests: XCTestCase {
         XCTAssertEqual(controller.debugFrame.height, normal.height, accuracy: 1)
     }
 
-    func testPlainEqualsZoomsIn() {
-        let (controller, _) = makePin()
+    func testPlainEqualsZoomsIn() throws {
+        let (controller, _) = try makePin()
         let before = controller.debugFrame.width
         controller.handleKey(key(24))
         XCTAssertGreaterThan(controller.debugFrame.width, before)
     }
 
-    func testArrowsMoveWindowByOnePoint() {
-        let (controller, _) = makePin()
+    func testArrowsMoveWindowByOnePoint() throws {
+        let (controller, _) = try makePin()
         let before = controller.debugFrame
         controller.handleKey(key(124))  // →
         XCTAssertEqual(controller.debugFrame.origin.x, before.origin.x + 1, accuracy: 0.01)
@@ -107,8 +124,26 @@ final class PinWindowKeyTests: XCTestCase {
     }
 
     /// 没进过标注的贴图按 ⌘Z 不该炸，也不该被贴图这层截走
-    func testCommandUndoIsNotClaimed() {
-        let (controller, _) = makePin()
+    func testCommandUndoIsNotClaimed() throws {
+        let (controller, _) = try makePin()
         XCTAssertFalse(controller.handleKey(key(6, .command)))
+    }
+
+    /// 落库会丢掉内存里的原图。丢掉之后：
+    /// 缩放要能换桶重新出图，空格要能建出画布——两条路都得靠 blob 兜着。
+    func testPinnedImageSurvivesStoreRelease() throws {
+        let (controller, _) = try makePin(width: 800, height: 400, withStore: true)
+        XCTAssertTrue(controller.debugHasContent)
+
+        // 连放三次会跨过显示桶（1600 → 2128），只有文件在才解得出新尺寸；
+        // 没有就只剩那个透明边框 —— 用户看到的就是「缩放后变黑框」
+        XCTAssertTrue(controller.handleKey(key(24)))
+        XCTAssertTrue(controller.handleKey(key(24)))
+        XCTAssertTrue(controller.handleKey(key(24)))
+        XCTAssertTrue(controller.debugHasContent, "换桶后要能从 blob 重新解出显示图")
+
+        XCTAssertTrue(controller.handleKey(key(49)))
+        XCTAssertTrue(controller.debugEditing, "原图取不回来时 ensureCanvas 会拿到 nil")
+        XCTAssertTrue(controller.debugBarVisible)
     }
 }

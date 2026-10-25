@@ -76,6 +76,22 @@ public final class PinStore: Sendable {
         return record.id
     }
 
+    /// 落库后的 blob 文件。贴图窗口拿它接着做按需解码——
+    /// 没有这个，"入库后就能丢掉内存原图" 是不成立的，缩放会把贴图画空。
+    public func blobURL(forPinID id: String) -> URL? {
+        let path = try? db.dbQueue.read { conn in
+            try String.fetchOne(conn,
+                                sql: """
+                                SELECT item.blobPath FROM pin_instance
+                                JOIN item ON item.id = pin_instance.itemID
+                                WHERE pin_instance.id = ?
+                                """,
+                                arguments: [id])
+        }
+        guard let path = path ?? nil else { return nil }
+        return db.blobURL(forRelativePath: path)
+    }
+
     public func updateFrame(id: String, frame: CGRect, screenUUID: String?) {
         try? db.dbQueue.write { conn in
             try conn.execute(sql: "UPDATE pin_instance SET frame = ?, screenUUID = ? WHERE id = ?",

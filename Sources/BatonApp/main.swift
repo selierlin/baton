@@ -172,18 +172,30 @@ case "--perm-request":
     exit(0)
 
 case "--pin-probe":
-    // 贴图标注联调：钉一张测试图 → 直接进标注态 → 全屏截一张，确认工具条落在哪。
+    // 贴图标注联调：钉一张测试图 → 缩放 + 空格 → 全屏截一张，确认图还在、工具条落在哪。
+    // 走真 store：落库后内存原图会被丢掉，显示改走 blob，这条路径才是线上那条。
     freopen("/tmp/baton-pin.log", "w", stdout)
     Task { @MainActor in
-        let pins = PinController()
+        let storeDirectory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("baton-pin-probe-store", isDirectory: true)
+        var store: PinStore?
+        if let database = try? BatonDatabase(directory: storeDirectory) {
+            store = PinStore(clipboard: ClipboardStore(database: database))
+        }
+        let pins = PinController(store: store)
         let probeWidth = args.count > 1 ? Int(args[1]) ?? 1200 : 1200
         let probeHeight = args.count > 2 ? Int(args[2]) ?? 760 : 760
         pins.pin(probePinImage(width: probeWidth, height: probeHeight), scale: 2)
-        print("pinned=\(pins.count)")
+        print("pinned=\(pins.count) store=\(store != nil) \(pins.debugLastState)")
         fflush(stdout)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-            pins.debugBeginEditingLast()
-            print("editing=requested")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            for _ in 0..<3 { pins.debugSendKeyLast(24) }   // = 放大三次，会跨显示桶
+            print("zoomed \(pins.debugLastState)")
+            fflush(stdout)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+            pins.debugSendKeyLast(49)                     // 空格调工具条
+            print("space \(pins.debugLastState)")
             fflush(stdout)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {

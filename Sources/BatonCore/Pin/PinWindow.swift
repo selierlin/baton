@@ -20,6 +20,24 @@ public final class PinController {
         pins.last?.debugSetEditing(true)
     }
 
+    /// 诊断用：给最近那张贴图发一次按键，走的是真实键位表。
+    @discardableResult
+    public func debugSendKeyLast(_ keyCode: UInt16) -> Bool {
+        guard let pin = pins.last,
+              let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                           timestamp: ProcessInfo.processInfo.systemUptime,
+                                           windowNumber: 0, context: nil, characters: "",
+                                           charactersIgnoringModifiers: "", isARepeat: false,
+                                           keyCode: keyCode) else { return false }
+        return pin.handleKey(event)
+    }
+
+    /// 诊断用：最近那张贴图的显示/工具条状态。
+    public var debugLastState: String {
+        guard let pin = pins.last else { return "none" }
+        return "content=\(pin.debugHasContent) editing=\(pin.debugEditing) bar=\(pin.debugBarVisible)"
+    }
+
     /// 全部临时藏起来：`orderOut` 而已，不删库也不改 frame，再切回来原位原样。
     public private(set) var isHidden = false
 
@@ -207,8 +225,12 @@ final class PinWindowController: NSObject, NSWindowDelegate {
             pinID = try? store.save(image: image, scale: imageScale, frame: panel.frame,
                                     screenUUID: Self.screenUUID(panel.screen),
                                     opacity: Double(panel.alphaValue))
-            // 落库后原图可以从内存里放掉，之后显示按窗口像素取、导出时再从 blob 解
-            if pinID != nil { source.releaseOriginal() }
+            if let pinID {
+                // 先把 blob 认回来再丢原图：显示（换桶重新解）和导出（原图）
+                // 都靠它，否则缩放一下贴图就空白、空格也建不出画布。
+                if let url = store.blobURL(forPinID: pinID) { source.adopt(fileURL: url) }
+                source.releaseOriginal()
+            }
         }
     }
 
@@ -313,6 +335,8 @@ final class PinWindowController: NSObject, NSWindowDelegate {
     var debugBarVisible: Bool { annotator?.debugBarVisible ?? false }
     var debugFrame: CGRect { window?.frame ?? .zero }
     var debugZoom: CGFloat { zoom }
+    /// 诊断用：窗口里到底有没有可画的位图（空白贴图就是这个变 nil）
+    var debugHasContent: Bool { view?.hasContent ?? false }
 
     /// 诊断用：绕过键盘直接进/出标注（`--pin-probe` 截图用）。
     func debugSetEditing(_ editing: Bool) {
@@ -594,6 +618,9 @@ private final class PinView: NSView {
     var onKey: ((NSEvent) -> Bool)?
     var onMenu: ((NSEvent) -> Bool)?
     var onDropFile: ((URL) -> Void)?
+
+    /// 诊断用：显示位图有没有解出来。
+    var hasContent: Bool { displayImage != nil }
 
     init(source: PinImageSource) {
         self.source = source
