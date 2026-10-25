@@ -62,17 +62,17 @@ enum LongshotGlyph {
     }
 
     /// 在 Longshot `Assets.car` 里的资源名。Baton 独有的工具（长截图、取消、
-    /// 视频、复制、选区、更多）没有对应资源，返回 nil 继续走手绘。
+    /// 视频、复制、选区、平箭头）没有对应资源，返回 nil 继续走手绘。
     ///
-    /// 两个箭头工具共用一个资源：Longshot 只有一个箭头，它画的是「细杆 +
-    /// 实心三角」，对应 Baton 的平箭头；内凹变体保持手绘以便区分。
+    /// 箭头这里容易搞反：Longshot 的 `bar_sinkArrow` 画的是**内凹**箭头（头底
+    /// 一个 V 形缺口），对应 Baton 的 `.sinkArrow`；平箭头才是重画的那个。
     var assetName: String? {
         switch self {
         case .square: return "bar_square_drawBorder"
         case .ellipse: return "bar_ellipse_drawBorder"
         case .line: return "bar_line"
-        case .flatArrow: return "bar_sinkArrow"
-        case .sinkArrow: return nil
+        case .flatArrow: return nil
+        case .sinkArrow: return "bar_sinkArrow"
         case .mosaicSquare: return "bar_mosaicSquare"
         case .mosaicEllipse: return "bar_mosaicEllipse"
         case .mosaicPencil: return "bar_mosaicPencil"
@@ -83,7 +83,7 @@ enum LongshotGlyph {
         case .length: return "bar_labelLength"
         case .area: return "bar_labelArea"
         case .colorCircle: return "bar_colorCircle"
-        case .pencil: return "bar_markerPen_round"
+        case .pencil: return nil
         case .markerPen: return "bar_markerPen_square"
         case .textMark: return "bar_textMark"
         case .labelText: return "bar_labelText"
@@ -280,23 +280,31 @@ enum LongshotGlyph {
             drawUndo(mirrored: true, color: color)
 
         case .scrollcut:
-            // 一张竖着的纸 + 右下角叠出来的续页，表示「往下还有」。
-            // 之前画的「纸 + 底部实心条」看不出来是长截图
-            let page = NSBezierPath(roundedRect: NSRect(x: 2.8, y: 3.8, width: 9.4, height: 11.4),
-                                    xRadius: 1.4, yRadius: 1.4)
+            // 一张竖纸 + 左上角的卷边 + 右下角叠出来的续页。
+            // 卷边是这张图区别于「普通文档」的关键记号，之前漏画了；
+            // 纸里是三条由长到短的横线。
+            let page = NSBezierPath(roundedRect: NSRect(x: 3.0, y: 2.6, width: 9.6, height: 12.6),
+                                    xRadius: 1.7, yRadius: 1.7)
             page.lineWidth = 1.5
             page.stroke()
 
+            let curl = NSBezierPath(roundedRect: NSRect(x: 1.5, y: 11.4, width: 2.7, height: 3.1),
+                                    xRadius: 0.9, yRadius: 0.9)
+            curl.lineWidth = 1.4
+            curl.stroke()
+
             let lines = NSBezierPath()
-            for y in [CGFloat(12.6), 10.4] {
-                lines.move(to: NSPoint(x: 5.2, y: y))
-                lines.line(to: NSPoint(x: 9.0, y: y))
+            for (y, w) in [(CGFloat(13.0), CGFloat(4.6)),
+                           (11.2, 3.4),
+                           (9.4, 2.3)] {
+                lines.move(to: NSPoint(x: 5.5, y: y))
+                lines.line(to: NSPoint(x: 5.5 + w, y: y))
             }
-            lines.lineWidth = 1.4
+            lines.lineWidth = 1.35
             lines.lineCapStyle = .round
             lines.stroke()
 
-            let tail = NSBezierPath(roundedRect: NSRect(x: 8.8, y: 2.4, width: 6.2, height: 4.6),
+            let tail = NSBezierPath(roundedRect: NSRect(x: 8.7, y: 1.9, width: 6.5, height: 4.7),
                                     xRadius: 1.1, yRadius: 1.1)
             // 先挖空，免得纸的边线穿过续页
             let ctx = NSGraphicsContext.current?.cgContext
@@ -328,9 +336,10 @@ enum LongshotGlyph {
             corners.lineCapStyle = .round
             corners.stroke()
             let lines = NSBezierPath()
-            for (y, w) in [(CGFloat(12.1), CGFloat(7.8)), (9.5, 6.6), (6.9, 5.2)] {
-                lines.move(to: NSPoint(x: 4.8, y: y))
-                lines.line(to: NSPoint(x: 4.8 + w, y: y))
+            // 三条线是居中的，不是左对齐——左对齐会让整个图标往左塌
+            for (y, w) in [(CGFloat(12.1), CGFloat(7.2)), (9.5, 6.6), (6.9, 5.0)] {
+                lines.move(to: NSPoint(x: 9.0 - w / 2, y: y))
+                lines.line(to: NSPoint(x: 9.0 + w / 2, y: y))
             }
             lines.lineWidth = 1.5
             lines.lineCapStyle = .round
@@ -518,30 +527,31 @@ enum LongshotGlyph {
 
     /// 手写体的「l n」：一个高瘦的环，右边接一个小 n。Longshot 的画笔图标。
     private static func scribblePath() -> NSBezierPath {
+        // Longshot 的画笔：一笔落下，斜着拉出一道细长的环，再在右下收个小环
+        // 带回钩。环必须显式经过外侧那一点——两条贝塞尔如果只是端点相同、
+        // 控制点对称，中点几乎重合，1.8 的线宽会把缝完全糊住，看着就是一根粗杠。
         let path = NSBezierPath()
-        path.move(to: NSPoint(x: 3.8, y: 3.6))
-        path.curve(to: NSPoint(x: 8.9, y: 13.4),
-                   controlPoint1: NSPoint(x: 6.2, y: 6.0),
-                   controlPoint2: NSPoint(x: 7.6, y: 11.0))
-        path.curve(to: NSPoint(x: 10.1, y: 14.9),
-                   controlPoint1: NSPoint(x: 9.6, y: 14.0),
-                   controlPoint2: NSPoint(x: 10.0, y: 14.9))
-        path.curve(to: NSPoint(x: 6.9, y: 5.6),
-                   controlPoint1: NSPoint(x: 10.2, y: 12.4),
-                   controlPoint2: NSPoint(x: 8.3, y: 8.2))
-        path.curve(to: NSPoint(x: 8.4, y: 4.4),
-                   controlPoint1: NSPoint(x: 5.7, y: 3.4),
-                   controlPoint2: NSPoint(x: 7.0, y: 3.1))
-        path.curve(to: NSPoint(x: 10.6, y: 8.0),
-                   controlPoint1: NSPoint(x: 9.6, y: 5.4),
-                   controlPoint2: NSPoint(x: 9.8, y: 7.0))
-        path.curve(to: NSPoint(x: 12.2, y: 4.8),
-                   controlPoint1: NSPoint(x: 11.4, y: 9.0),
-                   controlPoint2: NSPoint(x: 12.4, y: 6.8))
-        path.curve(to: NSPoint(x: 14.6, y: 5.2),
-                   controlPoint1: NSPoint(x: 11.8, y: 3.2),
-                   controlPoint2: NSPoint(x: 13.6, y: 3.7))
-        path.lineWidth = 1.75
+        path.move(to: NSPoint(x: 3.4, y: 2.9))
+        // 去程：左下 → 右上
+        path.curve(to: NSPoint(x: 11.9, y: 14.4),
+                   controlPoint1: NSPoint(x: 6.4, y: 6.0),
+                   controlPoint2: NSPoint(x: 9.8, y: 11.6))
+        // 回程：先从顶点向下外侧兜出去，再回到左下
+        path.curve(to: NSPoint(x: 12.4, y: 9.4),
+                   controlPoint1: NSPoint(x: 14.6, y: 13.2),
+                   controlPoint2: NSPoint(x: 14.0, y: 10.8))
+        path.curve(to: NSPoint(x: 7.0, y: 4.6),
+                   controlPoint1: NSPoint(x: 11.0, y: 7.8),
+                   controlPoint2: NSPoint(x: 8.6, y: 5.4))
+        // 第二个环：比第一个小，位置抬起来，别垂到纸边
+        path.curve(to: NSPoint(x: 12.6, y: 6.8),
+                   controlPoint1: NSPoint(x: 5.8, y: 3.2),
+                   controlPoint2: NSPoint(x: 11.2, y: 3.6))
+        // 收笔回钩
+        path.curve(to: NSPoint(x: 14.8, y: 4.0),
+                   controlPoint1: NSPoint(x: 13.6, y: 8.6),
+                   controlPoint2: NSPoint(x: 15.8, y: 5.4))
+        path.lineWidth = 1.8
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
         return path

@@ -383,9 +383,15 @@ final class AnnotateBarLayoutTests: XCTestCase {
     }
 
     func testArrowGroupMatchesLongshotOrder() {
-        // Longshot: 第二个格子是「线条」组，默认落在第一项「直线」上（工具条上是一根斜线图标）
+        // Longshot 的 snipToolbarItemsRawValue 里这一组写作
+        // "sinkArrow|line,flatArrow,sinkArrow"：竖线前是显示项，竖线后是选项顺序。
+        // 所以默认落在内凹箭头上，不是直线——照抄数组首位会错。
         XCTAssertEqual(AnnotateBarView.groups[1], [.line, .flatArrow, .sinkArrow])
-        XCTAssertEqual(AnnotateBarView.defaultTool(for: 1), .line)
+        XCTAssertEqual(AnnotateBarView.defaultTool(for: 1), .sinkArrow)
         XCTAssertEqual(AnnotateBarView.defaultTool(for: 0), .rectangle)
+        // 其余各组 Longshot 的显示项就是第一个
+        for i in [0, 2, 3, 4, 5, 6, 7] {
+            XCTAssertEqual(AnnotateBarView.defaultTool(for: i), AnnotateBarView.groups[i][0])
+        }
     }
 }

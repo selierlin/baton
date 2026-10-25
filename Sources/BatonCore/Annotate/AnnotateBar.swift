@@ -58,9 +58,16 @@ final class AnnotateBarView: NSView {
         [.counter],
     ]
 
-    /// 每组默认激活第一个工具（Longshot 的「线条」组默认落在「直线」上）。
+    /// 每组默认显示的工具。
+    ///
+    /// 照 Longshot 的 `snipToolbarItemsRawValue`：每组的格式是
+    /// `显示项|选项1,选项2,...`，显示项不一定是第一个。箭头那组显示的是
+    /// `sinkArrow` 而不是 `line`——照抄数组首位会默认落在「直线」上，
+    /// 和 Longshot 看到的箭头图标对不上。
     static func defaultTool(for index: Int) -> AnnotateTool {
-        groups[index][0]
+        let group = groups[index]
+        if group.contains(.sinkArrow) { return .sinkArrow }
+        return group[0]
     }
 
     static func glyph(for tool: AnnotateTool) -> LongshotGlyph {

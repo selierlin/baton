@@ -14,7 +14,7 @@ final class BarIconTests: XCTestCase {
         (.square, "bar_square_drawBorder"),
         (.ellipse, "bar_ellipse_drawBorder"),
         (.line, "bar_line"),
-        (.flatArrow, "bar_sinkArrow"),
+        (.sinkArrow, "bar_sinkArrow"),
         (.mosaicSquare, "bar_mosaicSquare"),
         (.mosaicEllipse, "bar_mosaicEllipse"),
         (.mosaicPencil, "bar_mosaicPencil"),
@@ -25,7 +25,6 @@ final class BarIconTests: XCTestCase {
         (.length, "bar_labelLength"),
         (.area, "bar_labelArea"),
         (.colorCircle, "bar_colorCircle"),
-        (.pencil, "bar_markerPen_round"),
         (.markerPen, "bar_markerPen_square"),
         (.textMark, "bar_textMark"),
         (.labelText, "bar_labelText"),
@@ -77,7 +76,8 @@ final class BarIconTests: XCTestCase {
 
     /// Baton 独有的工具没有原厂资源，必须继续走手绘而不是画成空白。
     func testBatonOnlyGlyphsStayHandDrawn() {
-        for glyph in [LongshotGlyph.scrollcut, .video, .more, .cancel, .copy, .selector, .sinkArrow] {
+        for glyph in [LongshotGlyph.scrollcut, .video, .more, .cancel, .copy, .selector,
+                      .flatArrow, .pencil] {
             XCTAssertNil(glyph.assetName, "\(glyph) 不该映射到 Longshot 资源")
             let image = glyph.image(size: 18, color: .black)
             XCTAssertEqual(image.size, NSSize(width: 18, height: 18))
