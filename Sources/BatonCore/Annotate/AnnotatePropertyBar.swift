@@ -37,8 +37,6 @@ final class AnnotatePropertyBarView: NSView {
     var onChange: ((Change) -> Void)?
 
     static let height: CGFloat = AnnotateBarView.height
-    /// 选中图标的蓝色，Longshot 用的是系统强调色的亮版
-    static let accent = NSColor(srgbRed: 0.10, green: 0.50, blue: 1.0, alpha: 1)
     private static let leading: CGFloat = 8
     private static let trailing: CGFloat = 8
     private static let gap: CGFloat = 8
@@ -74,7 +72,7 @@ final class AnnotatePropertyBarView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
-                                xRadius: 2, yRadius: 2)
+                                xRadius: 5, yRadius: 5)
         AnnotateBarView.backgroundColor.setFill()
         path.fill()
         AnnotateBarView.borderColor.setStroke()
@@ -157,17 +155,17 @@ final class AnnotatePropertyBarView: NSView {
         if group.count > 1 {
             let items = group.map { tool in
                 PropertySegmentControl.Item(image: PropertyIcon.tool(tool).image(),
-                                            selectedImage: PropertyIcon.tool(tool).image(color: Self.accent),
+                                            selectedImage: PropertyIcon.tool(tool).image(color: BarPalette.accent),
                                             tooltip: tool.title)
             }
-            let segment = PropertySegmentControl(items: items, itemWidth: 28)
+            let segment = PropertySegmentControl(items: items, itemWidth: 32)
             segment.selectionStyle = .tint
             segment.selectedIndex = group.firstIndex(of: tool) ?? 0
             segment.onSelect = { [weak self] index in
                 guard index < group.count else { return }
                 self?.onChange?(.tool(group[index]))
             }
-            add(segment, width: CGFloat(group.count) * 28)
+            add(segment, width: CGFloat(group.count) * 32)
             addSeparator()
         }
 
@@ -177,9 +175,7 @@ final class AnnotatePropertyBarView: NSView {
 
         case .rectangle, .ellipse:
             addShapeStyleSegment(state)
-            addSeparator()
             addLinePatternSegment(state)
-            addSeparator()
             addSlider(min: 1, max: 20, value: state.style.lineWidth, metric: .lineWidth) { [weak self] value in
                 self?.onChange?(.lineWidth(value))
             }
@@ -191,7 +187,6 @@ final class AnnotatePropertyBarView: NSView {
 
         case .line, .flatArrow, .sinkArrow:
             addLinePatternSegment(state)
-            addSeparator()
             addSlider(min: 1, max: 20, value: state.style.lineWidth, metric: .lineWidth,
                       tooltip: "粗细") { [weak self] value in
                 self?.onChange?(.lineWidth(value))
@@ -206,12 +201,11 @@ final class AnnotatePropertyBarView: NSView {
         case .mosaic, .mosaicEllipse, .mosaicPencil:
             let patterns = MosaicPattern.allCases
             addSegment(items: patterns.count,
-                       images: patterns.map { PropertyIcon.mosaic($0).image() },
+                       images: patterns.map { PropertyIcon.mosaic($0).image(color: BarPalette.chipIcon) },
                        selected: patterns.firstIndex(of: state.style.mosaicPattern) ?? 0,
                        provider: { patterns.firstIndex(of: $0.style.mosaicPattern) ?? 0 }) { [weak self] index in
                 self?.onChange?(.mosaicPattern(patterns[index]))
             }
-            addSeparator()
             addSlider(min: 4, max: 60, value: state.style.mosaicBlock, metric: .mosaicBlock,
                       tooltip: "大小") { [weak self] value in
                 self?.onChange?(.mosaicBlock(value))
@@ -224,6 +218,8 @@ final class AnnotatePropertyBarView: NSView {
                       tooltip: "圆角") { [weak self] value in
                 self?.onChange?(.cornerRadius(value))
             }
+            // 马赛克也要能换色，之前这条漏了，只能一直用当前色
+            addColors()
 
         case .marker, .markerEllipse, .markerPencil:
             addSlider(min: 1, max: 40, value: state.style.lineWidth, metric: .lineWidth,
@@ -254,12 +250,11 @@ final class AnnotatePropertyBarView: NSView {
         case .markerPen:
             let caps = MarkerCap.allCases
             addSegment(items: caps.count,
-                       images: caps.map { PropertyIcon.cap($0).image() },
+                       images: caps.map { PropertyIcon.cap($0).image(color: BarPalette.chipIcon) },
                        selected: caps.firstIndex(of: state.style.markerCap) ?? 0,
                        provider: { caps.firstIndex(of: $0.style.markerCap) ?? 0 }) { [weak self] index in
                 self?.onChange?(.markerCap(caps[index]))
             }
-            addSeparator()
             addSlider(min: 1, max: 30, value: state.style.lineWidth, metric: .lineWidth,
                       tooltip: "粗细") { [weak self] value in
                 self?.onChange?(.lineWidth(value))
@@ -273,12 +268,11 @@ final class AnnotatePropertyBarView: NSView {
         case .counter:
             let shapes = CounterShape.allCases
             addSegment(items: shapes.count,
-                       images: shapes.map { PropertyIcon.counter($0).image() },
+                       images: shapes.map { PropertyIcon.counter($0).image(color: BarPalette.chipIcon) },
                        selected: shapes.firstIndex(of: state.style.counterShape) ?? 0,
                        provider: { shapes.firstIndex(of: $0.style.counterShape) ?? 0 }) { [weak self] index in
                 self?.onChange?(.counterShape(shapes[index]))
             }
-            addSeparator()
             addSlider(min: 0.5, max: 2.5, value: state.style.counterScale, metric: .counterScale,
                       tooltip: "大小") { [weak self] value in
                 self?.onChange?(.counterScale(value))
@@ -299,12 +293,10 @@ final class AnnotatePropertyBarView: NSView {
                 self?.onChange?(.fontName(Self.fonts[index]))
             }
             add(popup, width: 98)
-            addSeparator()
             addSlider(min: 10, max: 96, value: state.style.fontSize, metric: .fontSize,
                       tooltip: "字体大小") { [weak self] value in
                 self?.onChange?(.fontSize(value))
             }
-            addSeparator()
             let styles = TextMarkStyle.allCases
             let stylePopup = PropertyPopupButton(title: state.style.textMarkStyle.title,
                                                  options: styles.map { $0.title })
@@ -339,7 +331,7 @@ final class AnnotatePropertyBarView: NSView {
     private func addShapeStyleSegment(_ state: State) {
         let styles = ShapeDrawStyle.allCases
         addSegment(items: styles.count,
-                   images: styles.map { PropertyIcon.shape($0).image() },
+                   images: styles.map { PropertyIcon.shape($0).image(color: BarPalette.chipIcon) },
                    selected: styles.firstIndex(of: state.style.shapeDrawStyle) ?? 1,
                    provider: { styles.firstIndex(of: $0.style.shapeDrawStyle) ?? 1 }) { [weak self] index in
             self?.onChange?(.shapeDrawStyle(styles[index]))
@@ -349,7 +341,7 @@ final class AnnotatePropertyBarView: NSView {
     private func addLinePatternSegment(_ state: State) {
         let patterns = LinePattern.allCases
         addSegment(items: patterns.count,
-                   images: patterns.map { PropertyIcon.line($0).image() },
+                   images: patterns.map { PropertyIcon.line($0).image(color: BarPalette.chipIcon) },
                    selected: patterns.firstIndex(of: state.style.linePattern) ?? 0,
                    provider: { patterns.firstIndex(of: $0.style.linePattern) ?? 0 }) { [weak self] index in
             self?.onChange?(.linePattern(patterns[index]))
@@ -361,12 +353,12 @@ final class AnnotatePropertyBarView: NSView {
                             onSelect: @escaping (Int) -> Void) {
         let segment = PropertySegmentControl(
             items: images.map { PropertySegmentControl.Item(image: $0, tooltip: nil) },
-            itemWidth: 28
+            itemWidth: 32
         )
         segment.selectedIndex = selected
         segment.selectionProvider = provider
         segment.onSelect = onSelect
-        add(segment, width: CGFloat(items) * 28)
+        add(segment, width: CGFloat(items) * 32)
     }
 
     private func addSlider(min: CGFloat, max: CGFloat, value: CGFloat,
@@ -380,20 +372,17 @@ final class AnnotatePropertyBarView: NSView {
         slider.value = value
         slider.toolTip = tooltip
         slider.onChange = onChange
-        add(slider, width: 96)
+        add(slider, width: 80)
     }
 
     private func addColors() {
-        addSeparator()
         let strip = PropertyColorStrip()
         strip.onPick = { [weak self] color in self?.onChange?(.color(color)) }
         add(strip, width: PropertyColorStrip.preferredWidth)
     }
 
     private func addSeparator() {
-        let line = NSView()
-        line.wantsLayer = true
-        line.layer?.backgroundColor = AnnotateBarView.iconColor.withAlphaComponent(0.55).cgColor
+        let line = PropertySeparator()
         sections.append(Section(view: line, width: 1, isSeparator: true))
     }
 
@@ -456,19 +445,33 @@ final class PropertySegmentControl: NSView {
     override var isFlipped: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
+        // Longshot 的分段是「一条浅槽 + 选中格子里一块更亮的块」，格子之间用
+        // 1pt 刻度分开，选中格不加描边（描边会把它勒成独立按钮的感觉）。
+        let slotHeight: CGFloat = 22
+        let slot = NSRect(x: 0, y: (bounds.height - slotHeight) / 2,
+                          width: bounds.width, height: slotHeight)
+        if selectionStyle == .chip {
+            BarPalette.controlRaised.setFill()
+            NSBezierPath(roundedRect: slot, xRadius: 7, yRadius: 7).fill()
+        }
+
         for (index, item) in items.enumerated() {
-            let cell = NSRect(x: CGFloat(index) * itemWidth, y: (bounds.height - 24) / 2,
-                              width: 24, height: 24)
+            let column = NSRect(x: CGFloat(index) * itemWidth, y: slot.minY,
+                                width: itemWidth, height: slotHeight)
             let selected = index == selectedIndex
             if selected, selectionStyle == .chip {
-                BarPalette.controlRaised.setFill()
-                NSBezierPath(roundedRect: cell, xRadius: 6, yRadius: 6).fill()
+                BarPalette.segmentedSelected.setFill()
+                NSBezierPath(roundedRect: column, xRadius: 6, yRadius: 6).fill()
+            } else if index > 0, selectionStyle == .chip, index - 1 != selectedIndex {
+                // 刻度夹在两格之间；挨着选中格的那条会被选中块盖住，不画。
+                BarPalette.segmentDivider.setFill()
+                NSRect(x: column.minX - 0.5, y: column.midY - 6, width: 1, height: 12).fill()
             }
             let image = selected ? (item.selectedImage ?? item.image) : item.image
             if let image {
                 let size = image.size
-                let rect = NSRect(x: cell.midX - size.width / 2,
-                                  y: cell.midY - size.height / 2,
+                let rect = NSRect(x: column.midX - size.width / 2,
+                                  y: column.midY - size.height / 2,
                                   width: size.width, height: size.height)
                 // 这里必须显式写 from 矩形并置 respectFlipped。属性条是 isFlipped 的，
                 // 用 `from: .zero` 的老重载画出来的图标会上下翻 —— 箭头从「指右上」
@@ -491,6 +494,21 @@ final class PropertySegmentControl: NSView {
     func apply(_ state: AnnotatePropertyBarView.State) {
         guard let index = selectionProvider?(state), index != selectedIndex else { return }
         selectedIndex = index
+    }
+}
+
+// MARK: - 分隔线
+
+/// 属性条里的竖分隔线：1pt 宽、18pt 高、居中，颜色跟图标一致。
+@MainActor
+final class PropertySeparator: NSView {
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        BarPalette.separator.setFill()
+        let height = min(18, bounds.height - 6)
+        NSRect(x: bounds.midX - 0.5, y: (bounds.height - height) / 2,
+               width: 1, height: height).fill()
     }
 }
 
@@ -531,7 +549,8 @@ final class PropertySlider: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let track = NSRect(x: 4, y: bounds.midY - 2, width: bounds.width - 8, height: 4)
+        let inset: CGFloat = 10
+        let track = NSRect(x: inset, y: bounds.midY - 2, width: bounds.width - inset * 2, height: 4)
         BarPalette.control.setFill()
         NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2).fill()
 
@@ -539,14 +558,19 @@ final class PropertySlider: NSView {
         if showsFill, ratio > 0 {
             let filled = NSRect(x: track.minX, y: track.minY,
                                 width: track.width * ratio, height: track.height)
-            NSColor.controlAccentColor.setFill()
+            BarPalette.accent.setFill()
             NSBezierPath(roundedRect: filled, xRadius: 2, yRadius: 2).fill()
         }
 
-        let knob = NSRect(x: track.minX + track.width * ratio - 7,
-                          y: bounds.midY - 7, width: 14, height: 14)
+        let knob = NSRect(x: track.minX + track.width * ratio - 9,
+                          y: bounds.midY - 9, width: 18, height: 18)
         BarPalette.knob.setFill()
-        NSBezierPath(ovalIn: knob).fill()
+        let dot = NSBezierPath(ovalIn: knob)
+        dot.fill()
+        // Longshot 的钮是浮在槽上的，加一圈极淡的投影才不糊在底色里
+        NSColor.black.withAlphaComponent(0.12).setStroke()
+        dot.lineWidth = 1
+        dot.stroke()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -565,7 +589,8 @@ final class PropertySlider: NSView {
 
     private func update(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        let ratio = max(0, min(1, (point.x - 4) / max(bounds.width - 8, 1)))
+        let inset: CGFloat = 10
+        let ratio = max(0, min(1, (point.x - inset) / max(bounds.width - inset * 2, 1)))
         value = minValue + ratio * (maxValue - minValue)
         onChange?(value)
     }
@@ -632,65 +657,97 @@ final class PropertyNumberField: NSView, NSTextFieldDelegate {
 
 @MainActor
 final class PropertyColorStrip: NSView {
-    static let preferredWidth: CGFloat = 34 * 3 + 38
+    /// 4 格 × 32pt，和 Longshot 的 `PPColorListSegmentedControl` 一样：
+    /// 三个预置色 + 一格自定义色，装在同一个胶囊里，格子之间只有 1pt 刻度。
+    static let preferredWidth: CGFloat = cellWidth * CGFloat(presets.count + 1)
     static let presets = AnnotateColor.palette
+
+    private static let cellWidth: CGFloat = 32
+    private static let dotSize: CGFloat = 12
+    private static let slotHeight: CGFloat = 22
+    /// 自定义色格的序号
+    private static let customIndex = presets.count
 
     var onPick: ((AnnotateColor) -> Void)?
     var current: AnnotateColor = .red {
-        didSet { needsDisplay = true }
+        didSet {
+            // 手挑的非预置色要留在自定义格里；选回预置色时那格继续显示上次挑的
+            if !Self.presets.contains(where: { Self.matches($0, current) }) {
+                customColor = current
+            }
+            needsDisplay = true
+        }
     }
 
+    /// 自定义格里显示的颜色
+    private var customColor: AnnotateColor = .blue
     private var popover: NSPopover?
 
     override var isFlipped: Bool { true }
 
+    private var capsule: NSRect {
+        NSRect(x: 0, y: (bounds.height - Self.slotHeight) / 2,
+               width: bounds.width, height: Self.slotHeight)
+    }
+
+    private func cellRect(at index: Int) -> NSRect {
+        NSRect(x: CGFloat(index) * Self.cellWidth, y: capsule.minY,
+               width: Self.cellWidth, height: Self.slotHeight)
+    }
+
+    private func dotRect(at index: Int) -> NSRect {
+        let cell = cellRect(at: index)
+        return NSRect(x: cell.midX - Self.dotSize / 2, y: cell.midY - Self.dotSize / 2,
+                      width: Self.dotSize, height: Self.dotSize)
+    }
+
+    private var selectedIndex: Int {
+        Self.presets.firstIndex(where: { Self.matches($0, current) }) ?? Self.customIndex
+    }
+
     override func draw(_ dirtyRect: NSRect) {
-        BarPalette.control.setFill()
-        let presets = NSRect(x: 0, y: 3, width: 34 * 3, height: bounds.height - 6)
-        NSBezierPath(roundedRect: presets, xRadius: 6, yRadius: 6).fill()
+        BarPalette.controlRaised.setFill()
+        NSBezierPath(roundedRect: capsule, xRadius: capsule.height / 2,
+                     yRadius: capsule.height / 2).fill()
 
-        for (index, color) in Self.presets.enumerated() {
-            let cell = NSRect(x: CGFloat(index) * 34, y: 0, width: 34, height: bounds.height)
-            let dot = NSRect(x: cell.midX - 7, y: cell.midY - 7, width: 14, height: 14)
-            let path = NSBezierPath(ovalIn: dot)
-            (NSColor(cgColor: color.cgColor) ?? .red).setFill()
-            path.fill()
-            NSColor.black.withAlphaComponent(0.18).setStroke()
-            path.lineWidth = 1
-            path.stroke()
+        // 选中的格子垫一块更亮的底（不描边，Longshot 的选中就是这个观感）
+        let selected = selectedIndex
+        BarPalette.segmentedSelected.setFill()
+        NSBezierPath(roundedRect: cellRect(at: selected), xRadius: 6, yRadius: 6).fill()
 
-            if index == Self.presets.firstIndex(where: { Self.matches($0, current) }) {
-                NSColor.white.withAlphaComponent(0.9).setStroke()
-                let ring = NSBezierPath(ovalIn: dot.insetBy(dx: -3, dy: -3))
-                ring.lineWidth = 1.5
-                ring.stroke()
-            }
+        // 刻度：夹在两格之间，紧挨选中格的那条会被选中块盖住
+        for index in 1...Self.customIndex where index != selected && index - 1 != selected {
+            BarPalette.segmentDivider.setFill()
+            NSRect(x: CGFloat(index) * Self.cellWidth - 0.5, y: capsule.midY - 6,
+                   width: 1, height: 12).fill()
         }
 
-        // 自定义色：和 Longshot 一样是「当前色 + 小三角」
-        let well = NSRect(x: 34 * 3 + 5, y: 3, width: 32, height: bounds.height - 6)
-        BarPalette.control.setFill()
-        NSBezierPath(roundedRect: well, xRadius: 6, yRadius: 6).fill()
-        let swatch = NSRect(x: well.minX + 4, y: well.midY - 7, width: 14, height: 14)
-        (NSColor(cgColor: current.cgColor) ?? .red).setFill()
-        NSBezierPath(ovalIn: swatch).fill()
-        NSColor.black.withAlphaComponent(0.25).setStroke()
-        NSBezierPath(ovalIn: swatch).stroke()
+        for (index, color) in Self.presets.enumerated() {
+            fillDot(at: index, color: color)
+        }
 
+        // 自定义色：当前手挑的颜色 + 右下角小三角（Longshot 就这么标的）
+        fillDot(at: Self.customIndex, color: customColor)
+        let dot = dotRect(at: Self.customIndex)
         let triangle = NSBezierPath()
-        triangle.move(to: NSPoint(x: well.maxX - 9, y: well.maxY - 7))
-        triangle.line(to: NSPoint(x: well.maxX - 4, y: well.maxY - 7))
-        triangle.line(to: NSPoint(x: well.maxX - 4, y: well.maxY - 11))
+        triangle.move(to: NSPoint(x: dot.maxX - 4, y: dot.maxY - 4))
+        triangle.line(to: NSPoint(x: dot.maxX + 2, y: dot.maxY - 4))
+        triangle.line(to: NSPoint(x: dot.maxX + 2, y: dot.maxY + 2))
         triangle.close()
-        BarPalette.icon.withAlphaComponent(0.75).setFill()
+        NSColor.black.setFill()
         triangle.fill()
+    }
+
+    private func fillDot(at index: Int, color: AnnotateColor) {
+        let path = NSBezierPath(ovalIn: dotRect(at: index))
+        (NSColor(cgColor: color.cgColor) ?? .red).setFill()
+        path.fill()
     }
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        let index = Int(point.x / 34)
-        if index >= 0, index < Self.presets.count {
-            onPick?(Self.presets[index])
+        for (index, color) in Self.presets.enumerated() where cellRect(at: index).contains(point) {
+            onPick?(color)
             return
         }
         showSwatches()

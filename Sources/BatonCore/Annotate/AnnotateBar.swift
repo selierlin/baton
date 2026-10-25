@@ -38,11 +38,10 @@ final class AnnotateBarView: NSView {
     static let iconSize: CGFloat = 18
 
     /// Longshot 的取色值，跟随系统外观：
-    /// 浅色是 `#E6E6E6` 底 + `#3C3C3C` 图标，深色才是 `#323232` 底 + `#DED4D4` 图标。
+    /// 浅色是 `#EBEBEB` 底 + `#4D4D4D` 图标，深色是 `#414141` 底 + `#E2DCDB` 图标。
     static let backgroundColor = BarPalette.background
     static let borderColor = BarPalette.border
-    static let iconColor = LongshotGlyph.iconColor
-    static let activeBackground = BarPalette.active
+    static let iconColor = BarPalette.icon
     static let hoverBackground = BarPalette.hover
 
     /// 每个槽位的一组工具。数组顺序 = 右键菜单顺序（照 Longshot 的
@@ -157,7 +156,7 @@ final class AnnotateBarView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
-                                xRadius: 2, yRadius: 2)
+                                xRadius: 5, yRadius: 5)
         Self.backgroundColor.setFill()
         path.fill()
         Self.borderColor.setStroke()
@@ -457,10 +456,6 @@ final class BarItemButton: NSButton {
     var isActive = false {
         didSet { refreshImage() }
     }
-    /// 属性条里的形状按钮选中时是蓝色，和主工具条的灰底不同
-    var usesAccent = false {
-        didSet { refreshImage() }
-    }
     var isRed = false {
         didSet { refreshImage() }
     }
@@ -496,8 +491,9 @@ final class BarItemButton: NSButton {
             color = AnnotateBarView.iconColor.withAlphaComponent(0.3)
         } else if isRed {
             color = .systemRed
-        } else if isActive && usesAccent {
-            color = .white
+        } else if isActive {
+            // Longshot 的当前工具不垫底，直接把图标染成蓝色
+            color = BarPalette.accent
         } else {
             color = AnnotateBarView.iconColor
         }
@@ -546,15 +542,8 @@ final class BarItemButton: NSButton {
     override func draw(_ dirtyRect: NSRect) {
         let box = NSRect(x: (bounds.width - 26) / 2, y: (bounds.height - 26) / 2,
                          width: 26, height: 26)
-        if isActive {
-            if usesAccent {
-                NSColor.controlAccentColor.setFill()
-                NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6).fill()
-            } else {
-                AnnotateBarView.activeBackground.setFill()
-                NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6).fill()
-            }
-        } else if hovering, isEnabled {
+        // 选中态只染图标，不垫底（Longshot 就是这样）；悬停才给一层浅底。
+        if hovering, isEnabled, !isActive {
             AnnotateBarView.hoverBackground.setFill()
             NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6).fill()
         }
