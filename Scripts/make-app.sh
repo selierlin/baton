@@ -32,6 +32,11 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Baton"
 # OCR 子进程与主进程同目录：SubprocessOCRTransport 按 Contents/MacOS/BatonOCR 找它
 cp "$OCR_BIN" "$APP/Contents/MacOS/BatonOCR"
+# 工具条图标在内的 BatonCore 资源。Bundle.module 只认 app 根目录，
+# 那是非规范位置；放 Contents/Resources 更干净，BarIcon 自己按这个路径找。
+RES_BUNDLE="$ROOT/.build/$CONFIG/Baton_BatonCore.bundle"
+[ -d "$RES_BUNDLE" ] || { echo "找不到资源包 $RES_BUNDLE"; exit 1; }
+cp -R "$RES_BUNDLE" "$APP/Contents/Resources/"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

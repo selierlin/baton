@@ -11,6 +11,9 @@ let package = Package(
         .target(
             name: "BatonCore",
             dependencies: [.product(name: "GRDB", package: "GRDB.swift")],
+            // 工具条图标：从 Longshot 提取并转成「黑 + alpha」的模板位图，
+            // 运行时按 BarPalette 染色，见 BarIcon.swift
+            resources: [.copy("Resources/BarIcons")],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .executableTarget(

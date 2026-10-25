@@ -37,12 +37,13 @@ final class AnnotateBarView: NSView {
     static let padding: CGFloat = 0
     static let iconSize: CGFloat = 18
 
-    /// Longshot 的取色值。
-    static let backgroundColor = NSColor(srgbRed: 50 / 255, green: 50 / 255, blue: 50 / 255, alpha: 1)
-    static let borderColor = NSColor(srgbRed: 85 / 255, green: 85 / 255, blue: 85 / 255, alpha: 1)
+    /// Longshot 的取色值，跟随系统外观：
+    /// 浅色是 `#E6E6E6` 底 + `#3C3C3C` 图标，深色才是 `#323232` 底 + `#DED4D4` 图标。
+    static let backgroundColor = BarPalette.background
+    static let borderColor = BarPalette.border
     static let iconColor = LongshotGlyph.iconColor
-    static let activeBackground = NSColor(srgbRed: 80 / 255, green: 80 / 255, blue: 80 / 255, alpha: 1)
-    static let hoverBackground = NSColor(srgbRed: 62 / 255, green: 62 / 255, blue: 62 / 255, alpha: 1)
+    static let activeBackground = BarPalette.active
+    static let hoverBackground = BarPalette.hover
 
     /// 每个槽位的一组工具。数组顺序 = 右键菜单顺序（照 Longshot 的
     /// `snipToolbarItemsRawValue`），默认显示项由 `defaultTool(for:)` 决定。
@@ -119,8 +120,7 @@ final class AnnotateBarView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        // 深色外观让 NSSlider / 菜单跟着深色走，和容器一致
-        appearance = NSAppearance(named: .darkAqua)
+        // 不锁外观：Longshot 的条子跟着系统走，浅色系统下是白底黑图标
 
         scroll.drawsBackground = false
         scroll.borderType = .noBorder
@@ -498,6 +498,12 @@ final class BarItemButton: NSButton {
         needsDisplay = true
     }
 
+    /// 图标是把颜色烘焙进位图的，切换浅色/深色外观时必须重画。
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshImage()
+    }
+
     override var isEnabled: Bool {
         didSet { refreshImage() }
     }
@@ -551,7 +557,7 @@ final class BarItemButton: NSButton {
 
 final class SeparatorLineView: NSView {
     override func draw(_ dirtyRect: NSRect) {
-        AnnotateBarView.iconColor.withAlphaComponent(0.9).setFill()
+        BarPalette.separator.withAlphaComponent(0.35).setFill()
         let height = min(18, bounds.height - 8)
         NSRect(x: bounds.midX - 0.5, y: (bounds.height - height) / 2,
                width: 1, height: height).fill()

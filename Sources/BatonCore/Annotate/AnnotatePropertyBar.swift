@@ -58,7 +58,6 @@ final class AnnotatePropertyBarView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        appearance = NSAppearance(named: .darkAqua)
         addSubview(content)
         build(for: .rectangle, state: State(tool: .rectangle, style: AnnotateStyle(), number: 1))
     }
@@ -462,7 +461,7 @@ final class PropertySegmentControl: NSView {
                               width: 24, height: 24)
             let selected = index == selectedIndex
             if selected, selectionStyle == .chip {
-                NSColor(srgbRed: 0.29, green: 0.29, blue: 0.29, alpha: 1).setFill()
+                BarPalette.controlRaised.setFill()
                 NSBezierPath(roundedRect: cell, xRadius: 6, yRadius: 6).fill()
             }
             let image = selected ? (item.selectedImage ?? item.image) : item.image
@@ -528,7 +527,7 @@ final class PropertySlider: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let track = NSRect(x: 4, y: bounds.midY - 2, width: bounds.width - 8, height: 4)
-        NSColor(srgbRed: 0.36, green: 0.36, blue: 0.36, alpha: 1).setFill()
+        BarPalette.control.setFill()
         NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2).fill()
 
         let ratio = max(0, min(1, (value - minValue) / (maxValue - minValue)))
@@ -541,7 +540,7 @@ final class PropertySlider: NSView {
 
         let knob = NSRect(x: track.minX + track.width * ratio - 7,
                           y: bounds.midY - 7, width: 14, height: 14)
-        NSColor(srgbRed: 0.94, green: 0.94, blue: 0.94, alpha: 1).setFill()
+        BarPalette.knob.setFill()
         NSBezierPath(ovalIn: knob).fill()
     }
 
@@ -587,8 +586,8 @@ final class PropertyNumberField: NSView, NSTextFieldDelegate {
         field.stringValue = "\(value)"
         field.isBordered = false
         field.drawsBackground = true
-        field.backgroundColor = NSColor(srgbRed: 0.16, green: 0.16, blue: 0.16, alpha: 1)
-        field.textColor = NSColor(srgbRed: 0.9, green: 0.9, blue: 0.9, alpha: 1)
+        field.backgroundColor = BarPalette.control
+        field.textColor = BarPalette.label
         field.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
         field.alignment = .center
         field.focusRingType = .none
@@ -641,7 +640,7 @@ final class PropertyColorStrip: NSView {
     override var isFlipped: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor(srgbRed: 0.30, green: 0.30, blue: 0.30, alpha: 1).setFill()
+        BarPalette.control.setFill()
         let presets = NSRect(x: 0, y: 3, width: 34 * 3, height: bounds.height - 6)
         NSBezierPath(roundedRect: presets, xRadius: 6, yRadius: 6).fill()
 
@@ -665,7 +664,7 @@ final class PropertyColorStrip: NSView {
 
         // 自定义色：和 Longshot 一样是「当前色 + 小三角」
         let well = NSRect(x: 34 * 3 + 5, y: 3, width: 32, height: bounds.height - 6)
-        NSColor(srgbRed: 0.30, green: 0.30, blue: 0.30, alpha: 1).setFill()
+        BarPalette.control.setFill()
         NSBezierPath(roundedRect: well, xRadius: 6, yRadius: 6).fill()
         let swatch = NSRect(x: well.minX + 4, y: well.midY - 7, width: 14, height: 14)
         (NSColor(cgColor: current.cgColor) ?? .red).setFill()
@@ -678,7 +677,7 @@ final class PropertyColorStrip: NSView {
         triangle.line(to: NSPoint(x: well.maxX - 4, y: well.maxY - 7))
         triangle.line(to: NSPoint(x: well.maxX - 4, y: well.maxY - 11))
         triangle.close()
-        NSColor(srgbRed: 0.75, green: 0.75, blue: 0.75, alpha: 1).setFill()
+        BarPalette.icon.withAlphaComponent(0.75).setFill()
         triangle.fill()
     }
 
@@ -746,7 +745,7 @@ final class PropertyPopupButton: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let box = bounds.insetBy(dx: 0, dy: 4)
-        NSColor(srgbRed: 0.22, green: 0.22, blue: 0.22, alpha: 1).setFill()
+        BarPalette.control.setFill()
         let path = NSBezierPath(roundedRect: box, xRadius: 5, yRadius: 5)
         path.fill()
         AnnotateBarView.borderColor.setStroke()
@@ -756,7 +755,7 @@ final class PropertyPopupButton: NSView {
         let title = currentIndex < options.count ? options[currentIndex] : ""
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 11, weight: .medium),
-            .foregroundColor: NSColor(srgbRed: 0.9, green: 0.9, blue: 0.9, alpha: 1),
+            .foregroundColor: BarPalette.label,
         ]
         let textSize = (title as NSString).size(withAttributes: attributes)
         (title as NSString).draw(at: NSPoint(x: box.minX + 7,
