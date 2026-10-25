@@ -74,29 +74,16 @@ public final class AnnotateCanvasView: NSView {
 
     private var currentCursor: NSCursor {
         if hoveredID != nil { return .openHand }
-        if adjustableSelection, let anchor = hoveredAnchor() { return anchorCursors[anchor] ?? .crosshair }
+        if adjustableSelection, let anchor = hoveredAnchor() { return anchor.cursor }
         return tool == .text || tool == .labelText ? .iBeam : .crosshair
     }
-
-    /// 8 个选区手柄的光标。
-    ///
-    /// 角上用 `NSCursor.frameResize`——系统给窗口边框缩放的那套对角双箭头，一眼就能
-    /// 看出能往斜方向拖。上一版四角返回 `.crosshair`，那正是绘制工具的默认光标，
-    /// 等于没有任何提示，用户只能靠试。
-    ///
-    /// `frameResize` 每次调用都会新建光标对象，而这里是在 `mouseMoved` 里取的，
-    /// 所以缓存住。
-    private lazy var anchorCursors: [SelectionAnchor: NSCursor] = Dictionary(
-        uniqueKeysWithValues: SelectionAnchor.allCases.map {
-            ($0, NSCursor.frameResize(position: $0.resizePosition, directions: .all))
-        })
 
     /// 鼠标现在压着哪个选区手柄。取当前光标位置反查，供光标形状用。
     private func hoveredAnchor() -> SelectionAnchor? {
         guard let window else { return nil }
         let inWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
         return SelectionGeometry.anchor(at: convert(inWindow, from: nil),
-                                        in: bounds, tolerance: 6)
+                                        in: bounds, tolerance: SelectionChrome.reach)
     }
 
     private var hoveredAnnotation: Annotation? {
@@ -204,7 +191,7 @@ public final class AnnotateCanvasView: NSView {
 
         // 选区手柄压在所有图元语义之上：它改的是「截哪块」，不是「画什么」
         if adjustableSelection,
-           let anchor = SelectionGeometry.anchor(at: point, in: bounds, tolerance: 6) {
+           let anchor = SelectionGeometry.anchor(at: point, in: bounds, tolerance: SelectionChrome.reach) {
             activeAnchor = anchor
             anchorDragStart = selectionFrame
             return
@@ -414,7 +401,7 @@ public final class AnnotateCanvasView: NSView {
               activeAnchor == nil else { return }
         let point = convert(event.locationInWindow, from: nil)
         // 压着选区手柄时不做图元悬停：两个高亮同时出现会分不清在拖哪个
-        if adjustableSelection, SelectionGeometry.anchor(at: point, in: bounds, tolerance: 6) != nil {
+        if adjustableSelection, SelectionGeometry.anchor(at: point, in: bounds, tolerance: SelectionChrome.reach) != nil {
             setHovered(nil)
             currentCursor.set()
             return
@@ -846,20 +833,4 @@ public final class AnnotateCanvasView: NSView {
 
 extension AnnotateDocument {
     // 撤销栈操作在模型里，画布只负责转发
-}
-
-private extension SelectionAnchor {
-    /// 手柄 → 系统「框体的哪个部位」。用它去取对角/单向缩放光标。
-    var resizePosition: NSCursor.FrameResizePosition {
-        switch self {
-        case .topLeft: return .topLeft
-        case .top: return .top
-        case .topRight: return .topRight
-        case .right: return .right
-        case .bottomRight: return .bottomRight
-        case .bottom: return .bottom
-        case .bottomLeft: return .bottomLeft
-        case .left: return .left
-        }
-    }
 }

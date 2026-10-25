@@ -88,6 +88,8 @@ public final class InPlaceAnnotator {
         canvas.onCommand = { [weak self] command in self?.perform(command) }
         host.addSubview(canvas)
         self.canvas = canvas
+        // 手柄有一半骑在选区边界外侧，事件要从宿主转进来
+        host.annotationCanvas = canvas
 
         let bar = AnnotateBarView()
         // 覆盖层是手动摆 frame 的，不跑 Auto Layout
@@ -429,6 +431,7 @@ public final class InPlaceAnnotator {
         bar?.removeFromSuperview()
         properties?.removeFromSuperview()
         selectionChrome.removeFromSuperlayer()
+        hostView?.annotationCanvas = nil
         canvas = nil
         bar = nil
         properties = nil
@@ -444,6 +447,7 @@ public final class InPlaceAnnotator {
         bar?.removeFromSuperview()
         properties?.removeFromSuperview()
         selectionChrome.removeFromSuperlayer()
+        hostView?.annotationCanvas = nil
         canvas = nil
         bar = nil
         properties = nil

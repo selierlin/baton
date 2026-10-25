@@ -299,6 +299,8 @@ final class OverlayView: NSView {
     /// 框定后保留选区视觉，不再跟随鼠标重算。
     var retainsSelection = false
     private var lockedSelection: CGRect?     // CG 全局坐标
+    /// 原地标注挂上来的画布。手柄外半边落在它外面，事件与光标要从这里转过去。
+    weak var annotationCanvas: NSView?
 
     /// 悬停拾取的粒度。默认「窗口区域」（AX 元素，最精确），⇥ 切到整窗。
     private var pickKind: PickTarget.Kind = .element
@@ -498,6 +500,33 @@ final class OverlayView: NSView {
 
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: lockedSelection == nil ? .crosshair : .arrow)
+
+        // 选区手柄骑在边界上，朝外那半边落在画布外面，画布自己的 cursor rect 管不到，
+        // 这里补一圈。后加的先命中，所以能压住上面的整屏箭头。
+        guard lockedSelection != nil, let canvas = annotationCanvas else { return }
+        for anchor in SelectionAnchor.allCases {
+            let center = SelectionGeometry.point(of: anchor, in: canvas.frame)
+            let box = CGRect(x: center.x - SelectionChrome.reach,
+                             y: center.y - SelectionChrome.reach,
+                             width: SelectionChrome.reach * 2,
+                             height: SelectionChrome.reach * 2)
+            addCursorRect(box, cursor: anchor.cursor)
+        }
+    }
+
+    /// 手柄的外半边落在画布外面，那里没有视图接手：光标不变、按下还会被本视图
+    /// 吞掉（编辑态 `mouseDown` 直接 return），表现就是「角落的手柄有时候拖不动」。
+    /// 命中环里把事件转给画布，让它用同一套 `SelectionGeometry.anchor` 判断。
+    ///
+    /// `hitTest` 的入参在**父视图**坐标里（实测确认），先换回本地再转给画布。
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        guard hit === self, lockedSelection != nil, let canvas = annotationCanvas else { return hit }
+        let local = convert(point, from: superview)
+        let inCanvas = canvas.convert(local, from: self)
+        guard SelectionGeometry.anchor(at: inCanvas, in: canvas.bounds,
+                                       tolerance: SelectionChrome.reach) != nil else { return hit }
+        return canvas
     }
 
     // MARK: - 坐标
@@ -530,6 +559,8 @@ final class OverlayView: NSView {
         guard lockedSelection != nil else { return }
         lockedSelection = global
         updateSelectionLayers()
+        // 手柄跟着选区走，光标热区得重算，否则拖到新位置后外沿还是旧的
+        window?.invalidateCursorRects(for: self)
     }
 
     /// 外部指定选区时直接锁住，不再等鼠标。
