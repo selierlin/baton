@@ -32,6 +32,9 @@ public final class PinController {
         return pin.handleKey(event)
     }
 
+    /// 诊断用：最近那张贴图的 frame（探针读它判断拖拽有没有真的搬动窗口）。
+    public var debugLastFrame: CGRect { pins.last?.debugFrame ?? .zero }
+
     /// 诊断用：最近那张贴图的显示/工具条状态。
     public var debugLastState: String {
         guard let pin = pins.last else { return "none" }
@@ -193,7 +196,9 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = true
-        panel.isMovableByWindowBackground = true
+        // 拖拽由 `PinView` 自己算（双击缩放会吃掉 AppKit 的背景拖动）；
+        // 两边都开着会一次拖拽算两遍，窗口抖
+        panel.isMovableByWindowBackground = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.isReleasedWhenClosed = false
         panel.alphaValue = CGFloat(initialOpacity)
@@ -320,8 +325,9 @@ final class PinWindowController: NSObject, NSWindowDelegate {
             self.onPinCopy?(image, self.imageScale)
         }
         annotator.onEditingChange = { [weak self] editing in
-            guard let self, let view = self.view, !editing else { return }
-            view.window?.makeFirstResponder(view)
+            guard let self, let view = self.view else { return }
+            view.allowsWindowDrag = !editing
+            if !editing { view.window?.makeFirstResponder(view) }
         }
         self.annotator = annotator
         return annotator
@@ -337,6 +343,11 @@ final class PinWindowController: NSObject, NSWindowDelegate {
     var debugZoom: CGFloat { zoom }
     /// 诊断用：窗口里到底有没有可画的位图（空白贴图就是这个变 nil）
     var debugHasContent: Bool { view?.hasContent ?? false }
+
+    /// 诊断用：窗口里这一点归谁处理（点用窗口坐标）
+    func debugHitView(at point: CGPoint) -> NSView? {
+        window?.contentView?.hitTest(point)
+    }
 
     /// 诊断用：绕过键盘直接进/出标注（`--pin-probe` 截图用）。
     func debugSetEditing(_ editing: Bool) {
@@ -700,10 +711,40 @@ private final class PinView: NSView {
         onZoom?(delta)
     }
 
+    /// 只读态的拖拽锚点：屏幕坐标 + 窗口原点。
+    ///
+    /// 拖窗口这事不能交给 `isMovableByWindowBackground`：这个视图自己实现了
+    /// `mouseDown`（双击缩放），AppKit 的背景拖动就再也不触发了。索性自己算，
+    /// 顺带把「标注态不搬窗口」变成一句话——那时候事件根本到不了这里。
+    private var dragAnchor: (pointer: CGPoint, origin: CGPoint)?
+
+    /// 只读态才允许搬窗口。画布自己也答了 NO（`interactive` 时），
+    /// 这层是兜底：哪天画布不铺满、或者别的子视图接手了点击，
+    /// 也不会在标注时把窗口拖跑。
+    var allowsWindowDrag = true
+
+    override var mouseDownCanMoveWindow: Bool { allowsWindowDrag }
+
     override func mouseDown(with event: NSEvent) {
         if event.clickCount >= 2 {
             onDoubleClick?()
+            return
         }
+        guard let window else { return }
+        dragAnchor = (window.convertPoint(toScreen: event.locationInWindow), window.frame.origin)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let dragAnchor, let window else { return }
+        // 用屏幕坐标算位移：窗口跟着动之后，`locationInWindow` 会跟着变，
+        // 拿它做增量会抖；屏幕坐标是绝对位置，动多少次都是准的。
+        let pointer = window.convertPoint(toScreen: event.locationInWindow)
+        window.setFrameOrigin(NSPoint(x: dragAnchor.origin.x + pointer.x - dragAnchor.pointer.x,
+                                      y: dragAnchor.origin.y + pointer.y - dragAnchor.pointer.y))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragAnchor = nil
     }
 
     override func rightMouseDown(with event: NSEvent) {

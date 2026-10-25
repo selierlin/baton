@@ -18,6 +18,35 @@ var probePreview: RecordingPreviewWindow?
 var probeCapture: CaptureSession?
 
 
+
+/// 用真鼠标事件拖一次（探针用）：从 `frame` 中心出发，按 `delta` 挪。
+///
+/// 合成 `NSEvent` 只能验「我们的计算对不对」，验不了「AppKit 到底把
+/// mouseDragged 送到谁手上」——后者才是贴图拖拽这类 bug 的高发区。
+func simulateDrag(over frame: CGRect, by delta: CGSize) {
+    guard let screen = NSScreen.main else { return }
+    // CGEvent 用屏幕全局坐标（左上原点），Cocoa 是左下原点
+    let start = CGPoint(x: frame.midX, y: screen.frame.height - frame.midY)
+    let end = CGPoint(x: start.x + delta.width, y: start.y - delta.height)
+    CGWarpMouseCursorPosition(start)
+    usleep(80_000)
+    // 只负责投递，处理交给事件循环：这里转 run loop 也捞不到这些事件，
+    // 调用方要留足时间再读 frame
+    postMouse(.leftMouseDown, at: start)
+    for step in 1...8 {
+        let t = CGFloat(step) / 8
+        postMouse(.leftMouseDragged, at: CGPoint(x: start.x + delta.width * t,
+                                                 y: start.y - delta.height * t))
+        usleep(20_000)
+    }
+    postMouse(.leftMouseUp, at: end)
+}
+
+func postMouse(_ type: CGEventType, at point: CGPoint) {
+    CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)?
+        .post(tap: .cghidEventTap)
+}
+
 /// 贴图探针用的假图：几条色带 + 对角线，够看清「标注画在哪、工具条盖没盖住内容」。
 func probePinImage(width: Int = 1200, height: Int = 760) -> CGImage {
     let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
@@ -198,12 +227,27 @@ case "--pin-probe":
             print("space-on \(pins.debugLastState) crosshair=\(NSCursor.current === NSCursor.crosshair)")
             fflush(stdout)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-            pins.debugSendKeyLast(49)                     // 再按一次收工具条
-            print("space-off \(pins.debugLastState) arrow=\(NSCursor.current === NSCursor.arrow)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
+            // 标注态拖一次：这时候拖拽该落在画布上，窗口一寸都不能动
+            print("trusted=\(AXIsProcessTrusted()) frame=\(pins.debugLastFrame)")
+            fflush(stdout)
+            simulateDrag(over: pins.debugLastFrame, by: CGSize(width: 30, height: 30))
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            print("drag-while-editing frame=\(pins.debugLastFrame)")
+            pins.debugSendKeyLast(49)                     // 收工具条
             fflush(stdout)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.7) {
+            print("space-off \(pins.debugLastState) arrow=\(NSCursor.current === NSCursor.arrow)")
+            fflush(stdout)
+            simulateDrag(over: pins.debugLastFrame, by: CGSize(width: 40, height: -30))
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.1) {
+            print("drag-while-reading frame=\(pins.debugLastFrame)")
+            fflush(stdout)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.3) {
             let shot = Process()
             shot.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
             shot.arguments = ["-x", "/tmp/baton-pin.png"]

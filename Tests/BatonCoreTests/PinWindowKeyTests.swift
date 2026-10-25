@@ -129,6 +129,38 @@ final class PinWindowKeyTests: XCTestCase {
         XCTAssertFalse(controller.handleKey(key(6, .command)))
     }
 
+    /// 只读态拖拽要能搬窗口，标注态拖拽要老老实实画图。
+    ///
+    /// 这条以前是坏的：`PinView` 自己实现了 `mouseDown`（双击缩放），
+    /// AppKit 的 `isMovableByWindowBackground` 就再不触发，怎么拖都不动。
+    func testDragMovesWindowOnlyWhenNotEditing() throws {
+        let (controller, _) = try makePin()
+        let view = try XCTUnwrap(controller.debugHitView(at: CGPoint(x: 200, y: 100)),
+                                 "只读态的事件应该落在贴图视图上")
+        let before = controller.debugFrame
+
+        view.mouseDown(with: mouse(.leftMouseDown, at: CGPoint(x: 200, y: 100)))
+        view.mouseDragged(with: mouse(.leftMouseDragged, at: CGPoint(x: 240, y: 125)))
+
+        XCTAssertEqual(controller.debugFrame.origin.x, before.origin.x + 40, accuracy: 0.5)
+        XCTAssertEqual(controller.debugFrame.origin.y, before.origin.y + 25, accuracy: 0.5,
+                       "窗口坐标 y 向上，拖到上方就是向上挪")
+        view.mouseUp(with: mouse(.leftMouseUp, at: CGPoint(x: 240, y: 125)))
+    }
+
+    func testDragDuringEditingDoesNotMoveWindow() throws {
+        let (controller, _) = try makePin()
+        XCTAssertTrue(controller.handleKey(key(49)))
+
+        let hitView = try XCTUnwrap(controller.debugHitView(at: CGPoint(x: 200, y: 100)))
+        XCTAssertFalse(hitView.mouseDownCanMoveWindow, "标注态画布不能把拖拽漏给窗口")
+
+        let before = controller.debugFrame
+        hitView.mouseDown(with: mouse(.leftMouseDown, at: CGPoint(x: 200, y: 100)))
+        hitView.mouseDragged(with: mouse(.leftMouseDragged, at: CGPoint(x: 260, y: 150)))
+        XCTAssertEqual(controller.debugFrame, before, "标注态拖拽必须只在画布上落笔")
+    }
+
     /// 落库会丢掉内存里的原图。丢掉之后：
     /// 缩放要能换桶重新出图，空格要能建出画布——两条路都得靠 blob 兜着。
     func testPinnedImageSurvivesStoreRelease() throws {
@@ -145,5 +177,13 @@ final class PinWindowKeyTests: XCTestCase {
         XCTAssertTrue(controller.handleKey(key(49)))
         XCTAssertTrue(controller.debugEditing, "原图取不回来时 ensureCanvas 会拿到 nil")
         XCTAssertTrue(controller.debugBarVisible)
+    }
+
+    private func mouse(_ type: NSEvent.EventType, at point: CGPoint,
+                       click: Int = 1) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                           timestamp: ProcessInfo.processInfo.systemUptime,
+                           windowNumber: 1, context: nil, eventNumber: 0,
+                           clickCount: click, pressure: 1)!
     }
 }
