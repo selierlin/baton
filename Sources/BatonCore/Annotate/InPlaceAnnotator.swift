@@ -123,13 +123,14 @@ public final class InPlaceAnnotator {
 
     // MARK: - 布局
 
-    /// 工具条浮在选区下方 9.5pt；装不下就翻到上方。
+    /// 工具条浮在选区下方，间距跟手柄热区绑在一起（`SelectionChrome.toolbarGap`），
+    /// 装不下就翻到上方。
     /// 横向：工具条比选区窄时右对齐，比选区宽时居中，最后夹回屏内 3pt。
     /// 属性条贴在工具条下面，左边缘对齐，间隔 5.5pt。
     private func layoutBars(around selection: CGRect, in bounds: CGRect) {
         guard let bar, let properties else { return }
 
-        let gap: CGFloat = 9.5
+        let gap = SelectionChrome.toolbarGap
         let stackGap: CGFloat = 5.5
         let margin: CGFloat = 10
         let edge: CGFloat = 3

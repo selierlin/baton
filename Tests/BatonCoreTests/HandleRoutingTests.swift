@@ -84,11 +84,35 @@ final class HandleRoutingTests: XCTestCase {
         XCTAssertTrue(hit(at: CGPoint(x: 340, y: 40)) === host)
     }
 
-    /// 工具条就贴在选区外侧 9.5pt，不能因为落在环形热区里被画布吃掉。
+    /// 工具条就贴在选区外侧，不能因为落在环形热区里被画布吃掉。
     func testSubviewsNearHandlesStillWin() {
         build()
         let toolbar = NSView(frame: CGRect(x: 92, y: 192, width: 60, height: 24))
         host.addSubview(toolbar)
         XCTAssertTrue(hit(at: CGPoint(x: 105, y: 200)) === toolbar)
+    }
+
+    /// 热区是给「手抖」留的余量，8pt 外仍然要算按住了手柄。
+    /// 这条会把旧半径（6pt）钉死：改小就红。
+    func testHandleHotspotReachesEightPointsOut() {
+        build()
+        // 左上角 (100, 200) 往左上 7,5 → 距离 8.6
+        XCTAssertTrue(hit(at: CGPoint(x: 93, y: 205)) === canvas)
+        // 下边中点 (200, 80) 往下 8
+        XCTAssertTrue(hit(at: CGPoint(x: 200, y: 72)) === canvas)
+    }
+
+    /// 但热区必须有边界，再远就该归宿主（那里是继续拉选区用的）。
+    func testFarOutsideHandleKeepsHost() {
+        build()
+        let justOutside = SelectionChrome.reach + 2
+        XCTAssertTrue(hit(at: CGPoint(x: 200, y: 80 - justOutside)) === host)
+        XCTAssertTrue(hit(at: CGPoint(x: 200, y: 200 + justOutside)) === host)
+    }
+
+    /// 工具条与选区的间距必须比手柄热区大，否则贴边的手柄会压到工具条上。
+    /// `toolbarGap` 是从 `reach` 推出来的，这条钉住推导关系本身。
+    func testToolbarGapClearsHandleHotspot() {
+        XCTAssertGreaterThan(SelectionChrome.toolbarGap, SelectionChrome.reach)
     }
 }
