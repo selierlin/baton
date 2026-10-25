@@ -640,7 +640,7 @@ final class PropertyColorStrip: NSView {
         didSet { needsDisplay = true }
     }
 
-    private var panelTarget: AnyObject?
+    private var popover: NSPopover?
 
     override var isFlipped: Bool { true }
 
@@ -693,30 +693,339 @@ final class PropertyColorStrip: NSView {
             onPick?(Self.presets[index])
             return
         }
-        openColorPanel()
+        showSwatches()
     }
+
+    // MARK: - 更多预置色
+
+    /// 箭头按钮弹的是预置色浮层，不是直接开色板。Longshot 的
+    /// `PPColorListSegmentedControl` 里 `colors` 是全量预置色、`segmentedColors`
+    /// 才是常驻的三个，点箭头就是把这批色摊开。
+    private func showSwatches() {
+        if let popover, popover.isShown {
+            popover.close()
+            return
+        }
+        let content = ColorSwatchPopover(current: current)
+        content.onPick = { [weak self] color in
+            self?.popover?.close()
+            self?.onPick?(color)
+        }
+        content.onCustom = { [weak self] in
+            self?.popover?.close()
+            self?.openColorPanel()
+        }
+        let controller = NSViewController()
+        controller.view = content
+        // popover 有自己的窗口，外观不会自动跟着主窗口走；动态色（BarPalette）
+        // 是按当前 appearance 解析的，这里不显式给就会出现「深色下弹白卡片」。
+        content.appearance = NSApp.effectiveAppearance
+        let pop = NSPopover()
+        pop.behavior = .transient
+        pop.appearance = NSApp.effectiveAppearance
+        pop.contentViewController = controller
+        pop.contentSize = content.preferredSize
+        pop.show(relativeTo: NSRect(x: bounds.width - 20, y: bounds.midY - 6, width: 1, height: 12),
+                 of: self, preferredEdge: .maxY)
+        popover = pop
+    }
+
+    // MARK: - 色板
 
     private func openColorPanel() {
+        Self.registerSwatchList()
         let panel = NSColorPanel.shared
         panel.showsAlpha = false
+        // 拖色轮时不要等松手才生效
+        panel.isContinuous = true
         panel.color = NSColor(cgColor: current.cgColor) ?? .red
-        panel.setTarget(self)
-        panel.setAction(#selector(panelChanged(_:)))
+        // panel 的 target 是弱引用，这里不能塞 self：切工具会把颜色条整个
+        // 重建，色板还开着的话 action 就发到已释放的视图上了。
+        let bridge = ColorPanelBridge.shared
+        bridge.owner = self
+        panel.setTarget(bridge)
+        panel.setAction(#selector(ColorPanelBridge.panelChanged(_:)))
+        // 色板顶部挂一排预置色，任何模式下都能一键取色
+        let strip = ColorSwatchRow(colors: AnnotateColor.swatchPalette, current: current)
+        strip.onPick = { [weak panel] color in
+            panel?.color = NSColor(cgColor: color.cgColor) ?? .red
+        }
+        panel.accessoryView = strip
+        bridge.row = strip
+        if !panel.isVisible { placePanel(panel) }
         panel.orderFront(nil)
-        panelTarget = self
     }
 
-    @objc private func panelChanged(_ sender: NSColorPanel) {
-        guard let color = sender.color.usingColorSpace(.sRGB) else { return }
-        onPick?(AnnotateColor(red: Double(color.redComponent),
-                              green: Double(color.greenComponent),
-                              blue: Double(color.blueComponent)))
+    /// 色板默认会落到屏幕左下角，离属性条老远。放到工具条正下方，
+    /// 挑完色视线不用来回跑；下方放不开就翻到上方。
+    private func placePanel(_ panel: NSColorPanel) {
+        guard let window else { return }
+        let anchor = window.convertToScreen(convert(bounds, to: nil))
+        let size = panel.frame.size
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? .zero
+        var x = anchor.midX - size.width / 2
+        var y = anchor.minY - size.height - 10
+        if y < visible.minY { y = anchor.maxY + 10 }
+        x = min(max(x, visible.minX + 8), visible.maxX - size.width - 8)
+        y = min(max(y, visible.minY + 8), visible.maxY - size.height - 8)
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    /// 把预置色存成一份 `NSColorList`，色板切到「颜色列表」页就能看到整排
+    /// Baton 预置色，而不是只有系统那几套。
+    static func registerSwatchList() {
+        let name = NSColorList.Name("Baton")
+        if NSColorList(name: name).allKeys.isEmpty == false { return }
+        let list = NSColorList(name: name)
+        for (index, color) in AnnotateColor.swatchPalette.enumerated() {
+            list.setColor(NSColor(cgColor: color.cgColor) ?? .red, forKey: "预设 \(index + 1)")
+        }
+        try? list.write(to: nil)
     }
 
     private static func matches(_ a: AnnotateColor, _ b: AnnotateColor) -> Bool {
         abs(a.red - b.red) < 0.01 && abs(a.green - b.green) < 0.01 && abs(a.blue - b.blue) < 0.01
     }
 
+}
+
+/// 常驻的色板回调中转。
+///
+/// `NSColorPanel` 的 target 是弱引用，而属性条每次切工具都会重建颜色条；
+/// 直接把颜色条当 target，色板还开着时就会向已释放的对象发消息。
+@MainActor
+private final class ColorPanelBridge: NSObject {
+    static let shared = ColorPanelBridge()
+    weak var owner: PropertyColorStrip?
+    weak var row: ColorSwatchRow?
+
+    @objc func panelChanged(_ sender: NSColorPanel) {
+        guard let color = sender.color.usingColorSpace(.sRGB) else { return }
+        let picked = AnnotateColor(red: Double(color.redComponent),
+                                   green: Double(color.greenComponent),
+                                   blue: Double(color.blueComponent))
+        row?.current = picked
+        owner?.onPick?(picked)
+    }
+}
+
+// MARK: - 预置色浮层
+
+/// 点「更多」后弹出来的色块网格，底部留一个「其他颜色…」进系统色板。
+@MainActor
+final class ColorSwatchPopover: NSView {
+    private static let columns = 6
+    private static let cell: CGFloat = 28
+    private static let padding: CGFloat = 14
+    private static let footer: CGFloat = 30
+
+    var onPick: ((AnnotateColor) -> Void)?
+    var onCustom: (() -> Void)?
+
+    private let colors = AnnotateColor.swatchPalette
+    private let current: AnnotateColor
+    private var customRect: NSRect = .zero
+
+    init(current: AnnotateColor) {
+        self.current = current
+        super.init(frame: .zero)
+        wantsLayer = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var isFlipped: Bool { true }
+
+    var preferredSize: NSSize {
+        let rows = ceil(Double(colors.count) / Double(Self.columns))
+        let width = Self.padding * 2 + Self.cell * CGFloat(Self.columns)
+        let height = Self.padding * 2 + Self.cell * CGFloat(rows) + Self.footer
+        return NSSize(width: width, height: height)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let box = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let path = NSBezierPath(roundedRect: box, xRadius: 8, yRadius: 8)
+        BarPalette.background.setFill()
+        path.fill()
+        BarPalette.border.setStroke()
+        path.lineWidth = 1
+        path.stroke()
+
+        for (index, color) in colors.enumerated() {
+            let column = index % Self.columns
+            let row = index / Self.columns
+            let cell = NSRect(x: Self.padding + CGFloat(column) * Self.cell,
+                              y: Self.padding + CGFloat(row) * Self.cell,
+                              width: Self.cell, height: Self.cell)
+            ColorSwatch.draw(color, in: cell.insetBy(dx: 6, dy: 6),
+                             selected: Self.matches(color, current))
+        }
+
+        // 「其他颜色…」
+        let y = Self.padding + Self.cell * CGFloat(ceil(Double(colors.count) / Double(Self.columns)))
+        customRect = NSRect(x: Self.padding, y: y + 4,
+                            width: bounds.width - Self.padding * 2, height: Self.footer - 8)
+        ColorSwatch.drawRing(in: NSRect(x: customRect.minX, y: customRect.midY - 8,
+                                        width: 16, height: 16))
+        let label = "其他颜色…" as NSString
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12),
+            .foregroundColor: BarPalette.label
+        ]
+        label.draw(at: NSPoint(x: customRect.minX + 24, y: customRect.midY - 8), withAttributes: attrs)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if customRect.contains(point) {
+            onCustom?()
+            return
+        }
+        for (index, color) in colors.enumerated() {
+            let column = index % Self.columns
+            let row = index / Self.columns
+            let cell = NSRect(x: Self.padding + CGFloat(column) * Self.cell,
+                              y: Self.padding + CGFloat(row) * Self.cell,
+                              width: Self.cell, height: Self.cell)
+            if cell.contains(point) {
+                onPick?(color)
+                return
+            }
+        }
+    }
+
+    private static func matches(_ a: AnnotateColor, _ b: AnnotateColor) -> Bool {
+        abs(a.red - b.red) < 0.01 && abs(a.green - b.green) < 0.01 && abs(a.blue - b.blue) < 0.01
+    }
+}
+
+/// 色板顶部的预置色网格。
+///
+/// 系统色板的宽度是它自己定的（色轮模式约 200pt），横排塞 12 个点只能显示
+/// 前 4 个，剩下的被裁掉。所以按固定列数排成网格，尺寸迁就色板宽度。
+@MainActor
+final class ColorSwatchRow: NSView {
+    private static let columns = 6
+    private static let diameter: CGFloat = 18
+    private static let spacing: CGFloat = 12
+    private static let padding: CGFloat = 8
+
+    static var preferredSize: NSSize {
+        let width = padding * 2 + CGFloat(columns) * diameter + CGFloat(columns - 1) * spacing
+        let rows = ceil(Double(12) / Double(columns))
+        let height = padding * 2 + CGFloat(rows) * diameter + CGFloat(rows - 1) * 6
+        return NSSize(width: width, height: height)
+    }
+
+    var onPick: ((AnnotateColor) -> Void)?
+
+    private let colors: [AnnotateColor]
+    /// 跟着色板当前色走，选中环才知道画在哪。
+    var current: AnnotateColor {
+        didSet { needsDisplay = true }
+    }
+
+    init(colors: [AnnotateColor], current: AnnotateColor) {
+        self.colors = colors
+        self.current = current
+        super.init(frame: NSRect(origin: .zero, size: Self.preferredSize))
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var isFlipped: Bool { true }
+
+    /// 每行固定的格子数，宽度对齐后整块居中。
+    private var cellSize: NSSize {
+        NSSize(width: Self.diameter + Self.spacing, height: Self.diameter + 6)
+    }
+
+    private func cellRect(at index: Int) -> NSRect {
+        let columns = Self.columns
+        let column = index % columns
+        let row = index / columns
+        let grid = cellSize
+        let totalWidth = CGFloat(columns) * grid.width - Self.spacing
+        let startX = (bounds.width - totalWidth) / 2
+        return NSRect(x: startX + CGFloat(column) * grid.width,
+                      y: Self.padding + CGFloat(row) * grid.height,
+                      width: Self.diameter, height: Self.diameter)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        for (index, color) in colors.enumerated() {
+            ColorSwatch.draw(color, in: cellRect(at: index),
+                             selected: Self.matches(color, current))
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        for (index, color) in colors.enumerated() {
+            // 点击区按整格算，圆点太小不好点
+            if cellRect(at: index).insetBy(dx: -Self.spacing / 2, dy: -3).contains(point) {
+                onPick?(color)
+                return
+            }
+        }
+    }
+
+    private static func matches(_ a: AnnotateColor, _ b: AnnotateColor) -> Bool {
+        abs(a.red - b.red) < 0.01 && abs(a.green - b.green) < 0.01 && abs(a.blue - b.blue) < 0.01
+    }
+}
+
+/// 圆点与彩虹环的公共画法。
+@MainActor
+enum ColorSwatch {
+    static func draw(_ color: AnnotateColor, in rect: NSRect, selected: Bool) {
+        let dot = NSBezierPath(ovalIn: rect)
+        (NSColor(cgColor: color.cgColor) ?? .red).setFill()
+        dot.fill()
+        NSColor.black.withAlphaComponent(0.22).setStroke()
+        dot.lineWidth = 1
+        dot.stroke()
+        if selected {
+            // 先描一圈底色做「留白」，再在外侧描高对比色；
+            // 只描底色的话，深色下圆点边缘看不出选中状态。
+            BarPalette.background.setStroke()
+            let gap = NSBezierPath(ovalIn: rect.insetBy(dx: -2.5, dy: -2.5))
+            gap.lineWidth = 2
+            gap.stroke()
+            BarPalette.label.setStroke()
+            let ring = NSBezierPath(ovalIn: rect.insetBy(dx: -4, dy: -4))
+            ring.lineWidth = 1.5
+            ring.stroke()
+        }
+    }
+
+    /// 色相环，用来表示「进系统色板」。macOS 的 CGContext 没有圆锥渐变，
+    /// 按 36 段扇形拼，肉眼看不出接缝。
+    static func drawRing(in rect: NSRect) {
+        let center = NSPoint(x: rect.midX, y: rect.midY)
+        let outer = rect.width / 2
+        let inner = outer * 0.55
+        let segments = 36
+        for index in 0..<segments {
+            let start = CGFloat(index) / CGFloat(segments) * 2 * .pi
+            let end = CGFloat(index + 1) / CGFloat(segments) * 2 * .pi
+            let path = NSBezierPath()
+            path.move(to: NSPoint(x: center.x + cos(start) * inner, y: center.y + sin(start) * inner))
+            path.line(to: NSPoint(x: center.x + cos(start) * outer, y: center.y + sin(start) * outer))
+            path.appendArc(withCenter: center, radius: outer,
+                           startAngle: start * 180 / .pi, endAngle: end * 180 / .pi)
+            path.line(to: NSPoint(x: center.x + cos(end) * inner, y: center.y + sin(end) * inner))
+            path.appendArc(withCenter: center, radius: inner,
+                           startAngle: end * 180 / .pi, endAngle: start * 180 / .pi)
+            path.close()
+            NSColor(hue: CGFloat(index) / CGFloat(segments), saturation: 0.85,
+                    brightness: 0.95, alpha: 1).setFill()
+            path.fill()
+        }
+    }
 }
 
 // MARK: - 下拉

@@ -19,12 +19,23 @@ public struct AnnotateColor: Codable, Sendable, Equatable {
     public static let orange = AnnotateColor(red: 0.98, green: 0.58, blue: 0.14)
     public static let yellow = AnnotateColor(red: 1.00, green: 0.84, blue: 0.04)
     public static let green = AnnotateColor(red: 0.55, green: 0.88, blue: 0.00)
+    public static let cyan = AnnotateColor(red: 0.15, green: 0.82, blue: 0.85)
     public static let blue = AnnotateColor(red: 0.15, green: 0.51, blue: 0.96)
+    public static let purple = AnnotateColor(red: 0.55, green: 0.36, blue: 0.95)
+    public static let pink = AnnotateColor(red: 1.00, green: 0.42, blue: 0.70)
+    public static let crimson = AnnotateColor(red: 0.72, green: 0.10, blue: 0.18)
+    public static let gray = AnnotateColor(red: 0.55, green: 0.55, blue: 0.58)
     public static let white = AnnotateColor(red: 1, green: 1, blue: 1)
     public static let black = AnnotateColor(red: 0, green: 0, blue: 0)
 
-    /// Longshot 属性条上的三个预置色 + 自定义色。
+    /// 属性条上常驻的三个预置色（红/黄/绿，和 Longshot 一致）。
     public static let palette: [AnnotateColor] = [.red, .yellow, .green]
+
+    /// 点开「更多」后能选的完整预置色，顺序按色相走一圈，末尾是黑白。
+    public static let swatchPalette: [AnnotateColor] = [
+        .red, .orange, .yellow, .green, .cyan, .blue,
+        .purple, .pink, .crimson, .gray, .white, .black
+    ]
 
     public var cgColor: CGColor {
         CGColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
