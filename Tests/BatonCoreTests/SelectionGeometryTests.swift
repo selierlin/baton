@@ -145,3 +145,53 @@ final class SelectionChromeTests: XCTestCase {
         XCTAssertEqual(path.boundingBox.maxX, 40 + SelectionChrome.handleSide / 2, accuracy: 0.01)
     }
 }
+
+/// 选区变了之后，标注是「换坐标系」，不是「跟着选框跑」。
+///
+/// 这里钉的是上一版的回归：offset 曾写成 `(new.minX - old.minX)`，符号反了——
+/// 左上角往左上扩 10pt 时图元被推上去 20pt，本该纹丝不动却动了两次。
+final class SelectionRebaseTests: XCTestCase {
+    func testExpandLeftMovesAnnotationRightInImageCoordinates() {
+        let offset = SelectionGeometry.imageOffset(
+            from: CGRect(x: 0, y: 0, width: 400, height: 300),
+            to: CGRect(x: -40, y: -20, width: 440, height: 320))
+
+        // 新图左边多 40px、上边多 20px，同一块内容的图片坐标就得 +40 / +20
+        XCTAssertEqual(offset, CGPoint(x: 40, y: 20))
+    }
+
+    func testExpandRightOrBottomKeepsCoordinates() {
+        let offset = SelectionGeometry.imageOffset(
+            from: CGRect(x: 100, y: 100, width: 400, height: 300),
+            to: CGRect(x: 100, y: 100, width: 500, height: 380))
+
+        XCTAssertEqual(offset, .zero, "只往右下扩不改原点，图元不该动")
+    }
+
+    func testShrinkFromLeftPullsAnnotationBack() {
+        let offset = SelectionGeometry.imageOffset(
+            from: CGRect(x: 100, y: 100, width: 400, height: 300),
+            to: CGRect(x: 160, y: 100, width: 340, height: 300))
+
+        XCTAssertEqual(offset, CGPoint(x: -60, y: 0))
+    }
+
+    /// 性质断言：同一块屏幕像素，换图前后必须落在同一个绝对位置。
+    func testAnnotationKeepsItsScreenPosition() {
+        let pairs: [(CGRect, CGRect)] = [
+            (CGRect(x: 0, y: 0, width: 400, height: 300), CGRect(x: -37, y: -11, width: 500, height: 420)),
+            (CGRect(x: 120, y: 80, width: 400, height: 300), CGRect(x: 120, y: 80, width: 260, height: 200)),
+            (CGRect(x: 120, y: 80, width: 400, height: 300), CGRect(x: 133, y: 91, width: 320, height: 260)),
+            (CGRect(x: 0, y: 0, width: 10, height: 10), CGRect(x: -1, y: -1, width: 12, height: 12)),
+        ]
+
+        for (old, new) in pairs {
+            let offset = SelectionGeometry.imageOffset(from: old, to: new)
+            for point in [CGPoint(x: 0, y: 0), CGPoint(x: 137, y: 42), CGPoint(x: 399, y: 299)] {
+                let rebased = CGPoint(x: point.x + offset.x, y: point.y + offset.y)
+                XCTAssertEqual(old.minX + point.x, new.minX + rebased.x, accuracy: 0.001)
+                XCTAssertEqual(old.minY + point.y, new.minY + rebased.y, accuracy: 0.001)
+            }
+        }
+    }
+}

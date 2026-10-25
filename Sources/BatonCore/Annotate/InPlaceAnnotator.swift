@@ -176,9 +176,10 @@ public final class InPlaceAnnotator {
     /// 像素/点的比例也不变，标注样式不用重算。
     private func adjustSelection(to global: CGRect) {
         guard let result, let overlay, let canvas, let hostView else { return }
-        let old = result.screenRect
-        guard global != old, global.width >= 2, global.height >= 2 else { return }
+        let oldScreen = result.screenRect
+        guard global != oldScreen, global.width >= 2, global.height >= 2 else { return }
 
+        let oldPixels = result.pixelRect
         let updated = CaptureResult(image: result.image,
                                     pixelRect: CaptureGeometry.pixelRect(forGlobal: global,
                                                                          in: result.display),
@@ -193,9 +194,10 @@ public final class InPlaceAnnotator {
         self.image = cropped
         scale = CGFloat(cropped.width) / max(local.width, 1)
 
-        // 标注存的是图片像素：裁剪原点挪了多少，全部图元就补多少
-        document.translateAll(dx: (global.minX - old.minX) * scale,
-                              dy: (global.minY - old.minY) * scale)
+        // 标注存的是图片像素：裁剪原点挪了多少，全部图元就补多少。
+        // 补对了，图元在屏幕上纹丝不动——它贴的是画面内容，不是选区边框。
+        let offset = SelectionGeometry.imageOffset(from: oldPixels, to: updated.pixelRect)
+        document.translateAll(dx: offset.x, dy: offset.y)
 
         canvas.baseImage = cropped
         canvas.selectionFrame = global

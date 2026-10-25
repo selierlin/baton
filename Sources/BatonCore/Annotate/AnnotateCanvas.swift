@@ -74,9 +74,22 @@ public final class AnnotateCanvasView: NSView {
 
     private var currentCursor: NSCursor {
         if hoveredID != nil { return .openHand }
-        if adjustableSelection, let anchor = hoveredAnchor() { return anchor.cursor }
+        if adjustableSelection, let anchor = hoveredAnchor() { return anchorCursors[anchor] ?? .crosshair }
         return tool == .text || tool == .labelText ? .iBeam : .crosshair
     }
+
+    /// 8 个选区手柄的光标。
+    ///
+    /// 角上用 `NSCursor.frameResize`——系统给窗口边框缩放的那套对角双箭头，一眼就能
+    /// 看出能往斜方向拖。上一版四角返回 `.crosshair`，那正是绘制工具的默认光标，
+    /// 等于没有任何提示，用户只能靠试。
+    ///
+    /// `frameResize` 每次调用都会新建光标对象，而这里是在 `mouseMoved` 里取的，
+    /// 所以缓存住。
+    private lazy var anchorCursors: [SelectionAnchor: NSCursor] = Dictionary(
+        uniqueKeysWithValues: SelectionAnchor.allCases.map {
+            ($0, NSCursor.frameResize(position: $0.resizePosition, directions: .all))
+        })
 
     /// 鼠标现在压着哪个选区手柄。取当前光标位置反查，供光标形状用。
     private func hoveredAnchor() -> SelectionAnchor? {
@@ -836,14 +849,17 @@ extension AnnotateDocument {
 }
 
 private extension SelectionAnchor {
-    /// 拖不同边给不同光标。macOS 没有公开的对角缩放光标（只有私有的
-    /// `_windowResizeNorthWestSouthEastCursor`），角上用十字保持「精准」的手感，
-    /// 硬塞一个横向光标反而会让人以为只能左右拖。
-    var cursor: NSCursor {
+    /// 手柄 → 系统「框体的哪个部位」。用它去取对角/单向缩放光标。
+    var resizePosition: NSCursor.FrameResizePosition {
         switch self {
-        case .left, .right: return .resizeLeftRight
-        case .top, .bottom: return .resizeUpDown
-        default: return .crosshair
+        case .topLeft: return .topLeft
+        case .top: return .top
+        case .topRight: return .topRight
+        case .right: return .right
+        case .bottomRight: return .bottomRight
+        case .bottom: return .bottom
+        case .bottomLeft: return .bottomLeft
+        case .left: return .left
         }
     }
 }

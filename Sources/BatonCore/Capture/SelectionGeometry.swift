@@ -111,6 +111,19 @@ public enum SelectionGeometry {
         return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
+    /// 选区变了之后，标注的图片像素坐标该怎么跟着换。
+    ///
+    /// 标注存的是「裁剪图里的像素」，原点在各张裁剪图的左上角。选区原点一动，
+    /// 同一块屏幕内容在新图里的像素坐标就整体平移了，图元必须补上这个位移，
+    /// 否则会被当成还贴在**新图**左上角，看上去就是跟着选区一起跑。
+    ///
+    /// 传的是两张图的 `pixelRect`（同一块屏的像素坐标），不是屏幕矩形：
+    /// `pixelRect` 的 origin 是向下取整的，用「点差 × 缩放」会在非整数位置漂 1px，
+    /// 来回调几次就明显歪了。
+    public static func imageOffset(from oldPixels: CGRect, to newPixels: CGRect) -> CGPoint {
+        CGPoint(x: oldPixels.minX - newPixels.minX, y: oldPixels.minY - newPixels.minY)
+    }
+
     /// 方向键 → 边。`command` 外扩、`shift` 收缩，两者都没有时返回 nil（那代表平移）。
     public static func edge(forKeyCode code: UInt16,
                             command: Bool, shift: Bool) -> SelectionEdge? {
