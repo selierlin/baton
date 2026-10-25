@@ -470,7 +470,12 @@ final class PropertySegmentControl: NSView {
                 let rect = NSRect(x: cell.midX - size.width / 2,
                                   y: cell.midY - size.height / 2,
                                   width: size.width, height: size.height)
-                image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1)
+                // 这里必须显式写 from 矩形并置 respectFlipped。属性条是 isFlipped 的，
+                // 用 `from: .zero` 的老重载画出来的图标会上下翻 —— 箭头从「指右上」
+                // 变成「指右下」，跟主工具条对不上。
+                image.draw(in: rect, from: NSRect(origin: .zero, size: size),
+                           operation: .sourceOver, fraction: 1,
+                           respectFlipped: true, hints: nil)
             }
         }
     }
