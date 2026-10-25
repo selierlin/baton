@@ -685,6 +685,14 @@ final class PropertyColorStrip: NSView {
 
     override var isFlipped: Bool { true }
 
+    /// 颜色条被拆掉（退出编辑）或被重建（切工具）时，把色板放回原层级。
+    /// 它此刻被抬到了覆盖层之上，不收回来会一直悬在所有窗口最前面。
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window == nil else { return }
+        ColorPanelBridge.shared.demote()
+    }
+
     private var capsule: NSRect {
         NSRect(x: 0, y: (bounds.height - Self.slotHeight) / 2,
                width: bounds.width, height: Self.slotHeight)
@@ -810,7 +818,11 @@ final class PropertyColorStrip: NSView {
         panel.accessoryView = strip
         bridge.row = strip
         if !panel.isVisible { placePanel(panel) }
-        panel.orderFront(nil)
+        // 色板默认是 .floating(3)，截图覆盖层在 .statusBar(25)：不抬层级的话
+        // 面板落在遮罩后面，点「其他颜色…」看起来什么都没发生，退出截图才露出来。
+        // 抬到覆盖层再高一档（同级只靠 orderFront 排前后，仍可能被压住）。
+        let base = window?.level ?? .floating
+        bridge.raise(panel, to: NSWindow.Level(rawValue: base.rawValue + 1))
     }
 
     /// 色板默认会落到屏幕左下角，离属性条老远。放到工具条正下方，
@@ -855,6 +867,23 @@ private final class ColorPanelBridge: NSObject {
     static let shared = ColorPanelBridge()
     weak var owner: PropertyColorStrip?
     weak var row: ColorSwatchRow?
+
+    /// 抬层级前的原始值，收尾时要还回去（否则色板会一直悬在所有窗口最前面）
+    private var baseLevel: NSWindow.Level?
+
+    func raise(_ panel: NSColorPanel, to level: NSWindow.Level) {
+        if baseLevel == nil { baseLevel = panel.level }
+        panel.level = level
+        panel.orderFrontRegardless()
+    }
+
+    func demote() {
+        guard let base = baseLevel else { return }
+        baseLevel = nil
+        let panel = NSColorPanel.shared
+        panel.level = base
+        if panel.isVisible { panel.orderFront(nil) }
+    }
 
     @objc func panelChanged(_ sender: NSColorPanel) {
         guard let color = sender.color.usingColorSpace(.sRGB) else { return }
