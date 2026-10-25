@@ -198,24 +198,7 @@ public final class AnnotateWindowController: NSObject, NSWindowDelegate {
             return
         }
 
-        var style = document.selectedAnnotation?.style ?? canvas.style
-        switch change {
-        case .color(let color): style.color = color
-        case .lineWidth(let points): style.lineWidth = points * scale
-        case .fontSize(let points): style.fontSize = points * scale
-        case .opacity(let value): style.opacity = value
-        case .fillAlpha(let value): style.fillAlpha = value
-        case .cornerRadius(let points): style.cornerRadius = points * scale
-        case .mosaicBlock(let points): style.mosaicBlock = points * scale
-        case .counterScale(let value): style.counterScale = value
-        case .shapeDrawStyle(let value): style.shapeDrawStyle = value
-        case .linePattern(let value): style.linePattern = value
-        case .markerCap(let value): style.markerCap = value
-        case .mosaicPattern(let value): style.mosaicPattern = value
-        case .counterShape(let value): style.counterShape = value
-        case .textMarkStyle(let value): style.textMarkStyle = value
-        case .fontName(let value): style.fontName = value
-        case .counterNumber(let number):
+        if case .counterNumber(let number) = change {
             if let id = document.selection, document.setCounterNumber(number, for: id) {
                 canvas.needsDisplay = true
             } else {
@@ -223,9 +206,10 @@ public final class AnnotateWindowController: NSObject, NSWindowDelegate {
             }
             refreshToolbar()
             return
-        case .tool:
-            return
         }
+
+        var style = document.selectedAnnotation?.style ?? canvas.style
+        guard change.merge(into: &style, scale: scale) else { return }
 
         canvas.style = style
         if let id = document.selection { document.restyle(id: id, style: style) }

@@ -946,3 +946,35 @@ enum PropertyIcon {
         }
     }
 }
+
+// MARK: - 改动落地
+
+extension AnnotatePropertyBarView.Change {
+    /// 把属性条的一次改动合进样式，尺寸类按 `scale`（图片像素 / 点）换算。
+    ///
+    /// 返回 false 表示这条改动不是「改样式」，调用方要自己处理：
+    /// 切工具要换画布工具，改序号要落到图元上。
+    /// 原地标注、弹窗标注、贴图标注三处共用，别各写一份漂出去。
+    func merge(into style: inout AnnotateStyle, scale: CGFloat) -> Bool {
+        switch self {
+        case .tool, .counterNumber:
+            return false
+        case .color(let color): style.color = color
+        case .lineWidth(let points): style.lineWidth = points * scale
+        case .fontSize(let points): style.fontSize = points * scale
+        case .opacity(let value): style.opacity = value
+        case .fillAlpha(let value): style.fillAlpha = value
+        case .cornerRadius(let points): style.cornerRadius = points * scale
+        case .mosaicBlock(let points): style.mosaicBlock = points * scale
+        case .counterScale(let value): style.counterScale = value
+        case .shapeDrawStyle(let value): style.shapeDrawStyle = value
+        case .linePattern(let value): style.linePattern = value
+        case .markerCap(let value): style.markerCap = value
+        case .mosaicPattern(let value): style.mosaicPattern = value
+        case .counterShape(let value): style.counterShape = value
+        case .textMarkStyle(let value): style.textMarkStyle = value
+        case .fontName(let value): style.fontName = value
+        }
+        return true
+    }
+}

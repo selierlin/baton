@@ -90,6 +90,7 @@ final class AnnotateBarView: NSView {
 
     private let scroll = BarScrollView()
     private let content = NSView()
+    private let variant: Variant
     private var allButtons: [BarItemButton] = []
     private var groupButtons: [BarItemButton] = []
     private var commandButtons: [AnnotateCommand: BarItemButton] = [:]
@@ -103,7 +104,18 @@ final class AnnotateBarView: NSView {
         didSet { updateExternalAvailability() }
     }
 
-    init() {
+    /// 两种场合的尾部动作不一样。
+    ///
+    /// 截图态是「取消 / 贴图 / 存储 / 复制」，贴图态照 Longshot 的
+    /// `pasteToolbarItemsRawValue` 收在「撤销 / 重做 / 存储 / 复制 / 完成编辑」——
+    /// 贴图里没有「再贴一次」「长截图」「OCR」这些上下文。
+    enum Variant {
+        case capture
+        case pin
+    }
+
+    init(variant: Variant = .capture) {
+        self.variant = variant
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
@@ -218,6 +230,7 @@ final class AnnotateBarView: NSView {
         }
 
         commandButtons[.undo]?.isEnabled = canUndo
+        commandButtons[.redo]?.isEnabled = canRedo
         updateExternalAvailability()
         Self.saveVariants(lastVariants)
     }
@@ -255,14 +268,23 @@ final class AnnotateBarView: NSView {
 
         addSeparator()
 
-        addCommand(.undo, glyph: .undo, tooltip: "撤销 (⌘Z)")
-        addExternal(.scroll, glyph: .scrollcut, tooltip: "长截图 (⌥⌘L)")
-        addExternal(.ocr, glyph: .ocr, tooltip: "识别文字 (⇧⌘O)")
-        addMore()
-        addCommand(.cancel, glyph: .cancel, tooltip: "取消 (Esc)", red: true)
-        addCommand(.pin, glyph: .pin, tooltip: "贴图 (P)", command: .pin)
-        addCommand(.save, glyph: .download, tooltip: "存储 (⌘S)", command: .save)
-        addCommand(.copy, glyph: .copy, tooltip: "复制 (↩)", command: .copy)
+        switch variant {
+        case .capture:
+            addCommand(.undo, glyph: .undo, tooltip: "撤销 (⌘Z)")
+            addExternal(.scroll, glyph: .scrollcut, tooltip: "长截图 (⌥⌘L)")
+            addExternal(.ocr, glyph: .ocr, tooltip: "识别文字 (⇧⌘O)")
+            addMore()
+            addCommand(.cancel, glyph: .cancel, tooltip: "取消 (Esc)", red: true)
+            addCommand(.pin, glyph: .pin, tooltip: "贴图 (P)", command: .pin)
+            addCommand(.save, glyph: .download, tooltip: "存储 (⌘S)", command: .save)
+            addCommand(.copy, glyph: .copy, tooltip: "复制 (↩)", command: .copy)
+        case .pin:
+            addCommand(.undo, glyph: .undo, tooltip: "撤销 (⌘Z)")
+            addCommand(.redo, glyph: .redo, tooltip: "重做 (⇧⌘Z)")
+            addCommand(.save, glyph: .download, tooltip: "保存到本地 (⌘D)", command: .save)
+            addCommand(.copy, glyph: .copy, tooltip: "复制 (↩)", command: .copy)
+            addCommand(.cancel, glyph: .cancel, tooltip: "完成编辑 (Esc)", red: true)
+        }
     }
 
     private func add(_ view: NSView, width: CGFloat) {
@@ -457,6 +479,9 @@ final class BarItemButton: NSButton {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 贴图的工具条挂在不激活的面板上，第一下点击不该被「先激活窗口」吃掉。
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     private func refreshImage() {
         let color: NSColor

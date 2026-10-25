@@ -17,6 +17,30 @@ var probePins: PinController?
 var probePreview: RecordingPreviewWindow?
 var probeCapture: CaptureSession?
 
+
+/// 贴图探针用的假图：几条色带 + 对角线，够看清「标注画在哪、工具条盖没盖住内容」。
+func probePinImage(width: Int = 1200, height: Int = 760) -> CGImage {
+    let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    context.setFillColor(CGColor(srgbRed: 0.97, green: 0.97, blue: 0.98, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    let colors = [CGColor(srgbRed: 0.95, green: 0.35, blue: 0.3, alpha: 1),
+                  CGColor(srgbRed: 0.98, green: 0.7, blue: 0.2, alpha: 1),
+                  CGColor(srgbRed: 0.25, green: 0.7, blue: 0.45, alpha: 1),
+                  CGColor(srgbRed: 0.2, green: 0.5, blue: 0.95, alpha: 1)]
+    for (index, color) in colors.enumerated() {
+        context.setFillColor(color)
+        context.fill(CGRect(x: 60, y: 60 + index * 150, width: 700, height: 110))
+    }
+    context.setStrokeColor(CGColor(srgbRed: 0.2, green: 0.2, blue: 0.2, alpha: 1))
+    context.setLineWidth(6)
+    context.move(to: CGPoint(x: 800, y: 60))
+    context.addLine(to: CGPoint(x: 1140, y: 700))
+    context.strokePath()
+    return context.makeImage()!
+}
+
 func loadCGImage(_ path: String) -> CGImage? {
     guard let nsImage = NSImage(contentsOfFile: path) else { return nil }
     var rect = CGRect(origin: .zero, size: nsImage.size)
@@ -146,6 +170,34 @@ case "--perm-request":
     MainActor.assumeIsolated { PermissionCenter.request(kind) }
     print("after=\(PermissionCenter.status(kind).rawValue)")
     exit(0)
+
+case "--pin-probe":
+    // 贴图标注联调：钉一张测试图 → 直接进标注态 → 全屏截一张，确认工具条落在哪。
+    freopen("/tmp/baton-pin.log", "w", stdout)
+    Task { @MainActor in
+        let pins = PinController()
+        let probeWidth = args.count > 1 ? Int(args[1]) ?? 1200 : 1200
+        let probeHeight = args.count > 2 ? Int(args[2]) ?? 760 : 760
+        pins.pin(probePinImage(width: probeWidth, height: probeHeight), scale: 2)
+        print("pinned=\(pins.count)")
+        fflush(stdout)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            pins.debugBeginEditingLast()
+            print("editing=requested")
+            fflush(stdout)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+            let shot = Process()
+            shot.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            shot.arguments = ["-x", "/tmp/baton-pin.png"]
+            try? shot.run()
+            shot.waitUntilExit()
+            print("shot=/tmp/baton-pin.png")
+            fflush(stdout)
+            exit(0)
+        }
+    }
+    app.run()
 
 case "--inplace-probe":
     // 原地标注联调：锁定一块固定区域，挂上编辑器，截一张全屏图确认位置

@@ -15,6 +15,11 @@ public final class PinController {
 
     public var count: Int { pins.count }
 
+    /// 诊断用：把最近钉的那张切到标注态（`Baton --pin-probe` 用，正常流程走空格）。
+    public func debugBeginEditingLast() {
+        pins.last?.debugSetEditing(true)
+    }
+
     /// 全部临时藏起来：`orderOut` 而已，不删库也不改 frame，再切回来原位原样。
     public private(set) var isHidden = false
 
@@ -37,6 +42,8 @@ public final class PinController {
             self?.pins.removeAll { $0.id == id }
         })
         controller.onDropFile = { [weak self] url in self?.pinFile(url) }
+        // 贴图窗口里的「贴图」：把带标注的合成图再钉一张
+        controller.onPinCopy = { [weak self] image, scale in self?.pin(image, scale: scale) }
         pins.append(controller)
         controller.show()
         ActionLog.result("pin.show", "count=\(pins.count) px=\(image.width)x\(image.height) scale=\(scale) at=\(screenRect.map { "\(Int($0.origin.x)),\(Int($0.origin.y))" } ?? "-")")
@@ -57,6 +64,7 @@ public final class PinController {
                 self?.pins.removeAll { $0.id == id }
             })
             controller.onDropFile = { [weak self] url in self?.pinFile(url) }
+            controller.onPinCopy = { [weak self] image, scale in self?.pin(image, scale: scale) }
             pins.append(controller)
             controller.show()
         }
@@ -113,8 +121,15 @@ final class PinWindowController: NSObject, NSWindowDelegate {
     var onDropFile: ((URL) -> Void)?
 
     private var window: PinPanel?
+    private var view: PinView?
+    private var annotator: PinAnnotator?
     private var zoom: CGFloat = 1
+    /// 进缩略图之前的倍率；非 nil 就表示现在是缩略图。
+    private var thumbnailRestore: CGFloat?
     private var pendingSave: DispatchWorkItem?
+
+    /// 缩略图模式把长边收到这么多点：够看清是什么图，又不至于挡着内容。
+    private static let thumbnailLongest: CGFloat = 160
 
     init(source: PinImageSource, scale: CGFloat, anchor: CGRect?, initialFrame: CGRect?,
          opacity: Double, store: PinStore?, pinID: String?, onClose: @escaping (UUID) -> Void) {
@@ -169,16 +184,23 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         let view = PinView(source: source)
         view.onZoom = { [weak self] delta in self?.changeZoom(by: delta) }
         view.onDoubleClick = { [weak self] in self?.toggleActualSize() }
-        view.onClose = { [weak self] in self?.close() }
+        view.onKey = { [weak self] event in self?.handleKey(event) ?? false }
         view.onMenu = { [weak self] event in self?.showMenu(for: event) ?? false }
         view.onDropFile = { [weak self] url in self?.onDropFile?(url) }
         panel.contentView = view
+        self.view = view
 
         // 贴图不抢焦点：截图后用户往往马上要滚动/继续打字，
         // nonactivating panel 只有被点中时才成为 key。
         panel.becomesKeyOnlyIfNeeded = true
+        panel.makeFirstResponder(view)
         panel.orderFrontRegardless()
         window = panel
+
+        // 刚钉出来的那张顺手拿 key：Baton 这会儿本来就是前台，用户下一句
+        // 多半是空格 / R，不拿 key 这些键会飘到别的 app 上。
+        // 恢复历史贴图时不抢——那是开机静默摆回来的。
+        if pinID == nil, NSApp.isActive { panel.makeKey() }
 
         // 只有新钉的才写库；恢复出来的已经有记录
         if pinID == nil, let store, let image = source.full() {
@@ -193,6 +215,9 @@ final class PinWindowController: NSObject, NSWindowDelegate {
     func close() {
         pendingSave?.cancel()
         guard let window else { return }
+        annotator?.dismantle()
+        annotator = nil
+        view = nil
         if let store, let pinID { store.delete(id: pinID) }
         window.delegate = nil
         window.close()
@@ -203,9 +228,134 @@ final class PinWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         pendingSave?.cancel()
+        annotator?.dismantle()
+        annotator = nil
+        view = nil
         if let store, let pinID { store.delete(id: pinID) }
         window = nil
         onClose(id)
+    }
+
+    // MARK: - 键位
+
+    /// 贴图窗口的一次按键。返回 true 表示已消费。
+    ///
+    /// 两个入口共用：只读态由 `PinView` 转发，编辑态由画布的 `keyInterceptor` 转发。
+    /// 键位表在 `PinShortcuts` 里，这里只管「这条动作怎么落到窗口上」。
+    func handleKey(_ event: NSEvent) -> Bool {
+        guard let action = PinShortcuts.action(for: event) else { return false }
+
+        // 编辑中且选中了图元：方向键微调图元、Esc 取消选中，都还归画布
+        let canvasOwns = annotator?.isEditing == true && annotator?.hasSelectedAnnotation == true
+        switch action {
+        case .nudge where canvasOwns, .escape where canvasOwns:
+            return false
+        default:
+            break
+        }
+
+        switch action {
+        case .toggleEdit:
+            toggleEditing()
+        case .thumbnail:
+            toggleThumbnail()
+        case .zoomIn:
+            changeZoom(by: max(0.05, zoom * 0.1))
+        case .zoomOut:
+            changeZoom(by: -max(0.05, zoom * 0.1))
+        case .opacityUp:
+            changeOpacity(by: 0.1)
+        case .opacityDown:
+            changeOpacity(by: -0.1)
+        case .copy:
+            ensureAnnotator()?.copyFlattened()
+        case .save:
+            ensureAnnotator()?.saveFlattened()
+        case .saveAndCopy:
+            ensureAnnotator()?.saveAndCopy()
+        case .escape:
+            if annotator?.isEditing == true {
+                annotator?.setEditing(false)
+            } else {
+                close()
+            }
+        case .nudge(let dx, let dy):
+            nudge(dx: dx, dy: dy)
+        }
+        return true
+    }
+
+    /// 标注层按需创建：没进过标注的贴图不该为它付一条面板 + 一堆视图的代价。
+    @discardableResult
+    private func ensureAnnotator() -> PinAnnotator? {
+        if let annotator { return annotator }
+        guard let window, let view else { return nil }
+
+        let annotator = PinAnnotator(source: source, hostView: view, hostWindow: window)
+        annotator.onKey = { [weak self] event in self?.handleKey(event) ?? false }
+        annotator.onPin = { [weak self] image in
+            guard let self else { return }
+            self.onPinCopy?(image, self.imageScale)
+        }
+        annotator.onEditingChange = { [weak self] editing in
+            guard let self, let view = self.view, !editing else { return }
+            view.window?.makeFirstResponder(view)
+        }
+        self.annotator = annotator
+        return annotator
+    }
+
+    /// 「贴图」动作：把合成结果再钉一张。
+    var onPinCopy: ((CGImage, CGFloat) -> Void)?
+
+    /// 诊断用：单测里看不到私有状态。
+    var debugEditing: Bool { annotator?.isEditing ?? false }
+    var debugBarVisible: Bool { annotator?.debugBarVisible ?? false }
+    var debugFrame: CGRect { window?.frame ?? .zero }
+    var debugZoom: CGFloat { zoom }
+
+    /// 诊断用：绕过键盘直接进/出标注（`--pin-probe` 截图用）。
+    func debugSetEditing(_ editing: Bool) {
+        if editing {
+            ensureAnnotator()?.setEditing(true)
+        } else {
+            annotator?.setEditing(false)
+        }
+    }
+
+    private func toggleEditing() {
+        guard let annotator = ensureAnnotator() else { return }
+        annotator.setEditing(!annotator.isEditing)
+    }
+
+    private func changeOpacity(by delta: CGFloat) {
+        guard let window else { return }
+        let next = min(max(window.alphaValue + delta, 0.2), 1)
+        window.alphaValue = next
+        if let store, let pinID { store.updateOpacity(id: pinID, opacity: Double(next)) }
+    }
+
+    private func nudge(dx: CGFloat, dy: CGFloat) {
+        guard let window else { return }
+        let frame = window.frame
+        window.setFrameOrigin(NSPoint(x: frame.origin.x + dx, y: frame.origin.y + dy))
+        scheduleSave()
+    }
+
+    /// 缩略图模式：缩到长边 160pt，再按 R 回到原倍率。
+    private func toggleThumbnail() {
+        annotator?.setEditing(false)
+        if let restore = thumbnailRestore {
+            thumbnailRestore = nil
+            setZoom(restore)
+            return
+        }
+        let longest = max(baseSize.width, baseSize.height)
+        guard longest > 0 else { return }
+        let target = min(zoom, Self.thumbnailLongest / longest)
+        guard target < zoom - 0.001 else { return }
+        thumbnailRestore = zoom
+        setZoom(target)
     }
 
     // MARK: - 位置与倍率
@@ -245,7 +395,8 @@ final class PinWindowController: NSObject, NSWindowDelegate {
 
     private func changeZoom(by delta: CGFloat) {
         guard let window else { return }
-        let next = min(max(zoom + delta, 0.25), 4)
+        // 下限放到 0.05：缩略图模式要把长边收到 160pt，大图那一档会低于 0.25
+        let next = min(max(zoom + delta, 0.05), 4)
         guard abs(next - zoom) > 0.001 else { return }
 
         // 以窗口中心为锚点缩放
@@ -283,17 +434,51 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
     }
 
-    func windowDidMove(_ notification: Notification) { scheduleSave() }
-    func windowDidResize(_ notification: Notification) { scheduleSave() }
+    func windowDidMove(_ notification: Notification) {
+        // 工具条是宿主的子窗口，跟着动；但缩放/贴边重排还得自己算一遍
+        annotator?.layoutChrome()
+        scheduleSave()
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        annotator?.layoutChrome()
+        scheduleSave()
+    }
 
     // MARK: - 右键菜单
 
     private func showMenu(for event: NSEvent) -> Bool {
         let menu = NSMenu()
 
-        let copy = NSMenuItem(title: "复制图片", action: #selector(copyImage), keyEquivalent: "")
+        // 键位写在标题里，不当 keyEquivalent：弹出菜单里挂等价键会真去抢键盘
+        let annotate = NSMenuItem(title: annotator?.isEditing == true ? "完成编辑  空格" : "标注  空格",
+                                  action: #selector(toggleEditMenuItem),
+                                  keyEquivalent: "")
+        annotate.target = self
+        menu.addItem(annotate)
+
+        let thumbnail = NSMenuItem(title: "缩略图模式  R", action: #selector(toggleThumbnailMenuItem),
+                                   keyEquivalent: "")
+        thumbnail.target = self
+        thumbnail.state = thumbnailRestore == nil ? .off : .on
+        menu.addItem(thumbnail)
+
+        menu.addItem(.separator())
+
+        let copy = NSMenuItem(title: "复制图片  ↩", action: #selector(copyImage), keyEquivalent: "")
         copy.target = self
         menu.addItem(copy)
+
+        let save = NSMenuItem(title: "保存到本地  ⌘D", action: #selector(saveImage), keyEquivalent: "")
+        save.target = self
+        menu.addItem(save)
+
+        let saveAndCopy = NSMenuItem(title: "保存并复制  ⇧⌘D", action: #selector(saveAndCopyImage),
+                                     keyEquivalent: "")
+        saveAndCopy.target = self
+        menu.addItem(saveAndCopy)
+
+        menu.addItem(.separator())
 
         let toggle = NSMenuItem(title: "总在最前", action: #selector(toggleFloating), keyEquivalent: "")
         toggle.target = self
@@ -333,10 +518,33 @@ final class PinWindowController: NSObject, NSWindowDelegate {
     }
 
     @objc private func copyImage() {
+        // 有标注就复制合成的，没有就复制原图；`flattened()` 两种情况都对
+        if let annotator {
+            annotator.copyFlattened()
+            return
+        }
         guard let full = source.full() else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.writeObjects([NSImage(cgImage: full, size: .zero)])
+    }
+
+    @objc private func saveImage() {
+        guard let annotator = ensureAnnotator() else { return }
+        annotator.saveFlattened()
+    }
+
+    @objc private func saveAndCopyImage() {
+        guard let annotator = ensureAnnotator() else { return }
+        annotator.saveAndCopy()
+    }
+
+    @objc private func toggleEditMenuItem() {
+        toggleEditing()
+    }
+
+    @objc private func toggleThumbnailMenuItem() {
+        toggleThumbnail()
     }
 
     @objc private func toggleFloating() {
@@ -382,7 +590,8 @@ private final class PinView: NSView {
     private var displayBucket = 0
     var onZoom: ((CGFloat) -> Void)?
     var onDoubleClick: (() -> Void)?
-    var onClose: (() -> Void)?
+    /// 键位交给控制器（贴图的键位表和截图态不一样，实现只该有一份）。
+    var onKey: ((NSEvent) -> Bool)?
     var onMenu: ((NSEvent) -> Bool)?
     var onDropFile: ((URL) -> Void)?
 
@@ -477,10 +686,7 @@ private final class PinView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 {
-            onClose?()
-            return
-        }
+        if onKey?(event) == true { return }
         super.keyDown(with: event)
     }
 }

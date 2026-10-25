@@ -28,6 +28,17 @@ public final class AnnotateCanvasView: NSView {
     /// 走闭包而不是直接关窗，是因为关窗时机由控制器决定（贴图、保存都要先合成）。
     public var onCommand: ((AnnotateCommand) -> Void)?
 
+    /// 宿主可以先截键：返回 true 表示已消费，画布不再按自己的键位表处理。
+    ///
+    /// 贴图窗口要用：那边的空格（开工具条）、R（缩略图）、`=` / `-`（缩放）
+    /// 和截图态的单键含义完全不一样，而画布是 first responder，
+    /// 不给个钩子就只能改画布的键位表，两边互相污染。
+    public var keyInterceptor: ((NSEvent) -> Bool)?
+
+    /// 只读展示时置 false：标注照画，鼠标事件穿过去给宿主。
+    /// 贴图窗口在「没进标注」时靠它把拖拽还给窗口本身（拖图挪位置）。
+    public var interactive = true
+
     /// 视图点 → 图片像素
     private var pixelScale: CGFloat {
         guard bounds.width > 0 else { return 1 }
@@ -67,6 +78,15 @@ public final class AnnotateCanvasView: NSView {
 
     public override var isFlipped: Bool { true }
     public override var acceptsFirstResponder: Bool { true }
+
+    /// 只读态不参与命中：`hitTest` 返回 nil，事件直接落到下面的贴图视图上。
+    public override func hitTest(_ point: NSPoint) -> NSView? {
+        interactive ? super.hitTest(point) : nil
+    }
+
+    /// 贴图窗口开着「拖背景移动窗口」。编辑态必须拒绝，否则一下拖拽就变成搬窗口，
+    /// 一笔都画不出来（截图态的覆盖层不走这个开关，所以以前没暴露）。
+    public override var mouseDownCanMoveWindow: Bool { !interactive }
 
     public override func resetCursorRects() {
         addCursorRect(bounds, cursor: currentCursor)
@@ -698,6 +718,9 @@ public final class AnnotateCanvasView: NSView {
             super.keyDown(with: event)
             return
         }
+
+        // 宿主优先（贴图窗口的重名键）
+        if keyInterceptor?(event) == true { return }
 
         // 方向键的 ⌘ / ⇧ 有独立语义（扩缩选区），必须在 command 分支之前截走，
         // 否则 ⌘← 会被当成未知命令丢给 super。

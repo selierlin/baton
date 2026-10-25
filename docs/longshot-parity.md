@@ -181,7 +181,52 @@ mouseDown → drag → mouseUp
 
 ---
 
-### 不做（明确排除，避免范围蔓延）
+### P5 — 贴图窗口可标注（已完成，改动量：大）
+
+**Longshot 的事实**（`defaults read com.chitaner.Longshot` + `zh-Hans.lproj`）
+
+| 键 | 动作 | 键名 |
+|---|---|---|
+| `R` | 缩略图模式 | `pinToggleMinHolding` |
+| `=` / `-` | 放大 / 缩小 | `pinZoomIn` / `pinZoomOut` |
+| `空格` | 显示工具条 | `pinToggleToolbar` |
+| `↩` / `⌘D` / `⇧⌘D` | 复制 / 保存 / 保存并复制 | `pinCopy` / `pinDownload` / `pinDownloadAndCopy` |
+| `⌘=` / `⌘-` | 不透明度 ± | `pinIncrease/DecreaseWinAlpha` |
+| `⌘Z` / `⇧⌘Z` | 撤销 / 重做 | `pinUndo` / `pinRedo` |
+| `↑↓←→` | 移动贴图 | `pinMoveMedia*` |
+| `Esc` | 退出钉图 | `pinExit` |
+
+关键：那个「工具条」是**标注工具条**。`pasteToolbarItemsRawValue` = 8 组画笔 +
+分隔 + `pinUndo`/`pinRedo`/`pinDownload`/`pinCopy`/`pinFinishEdit`，
+也就是说 Longshot 的贴图是「可以继续画的便签」，不是只读预览。
+
+**Baton 的实现取舍**
+
+- 画布 `AnnotateCanvasView` 作为贴图视图的子视图，坐标固定为**原图像素**，`drawsBaseImage = false`
+  （底图仍由 `PinView` 按窗口设备像素重采样画，比原图直缩清晰）。窗口缩放只改画布的点尺寸，
+  标注坐标不动。
+- 工具条挂在一条**无边框子面板**（`addChildWindow`）上，浮在贴图窗口外侧；小图上不会盖内容，
+  位置跟着 `windowDidMove/Resize` 重排。没有塞进窗口，是因为贴图窗口的 frame 就是图片尺寸，
+  而工具条有 500pt 宽。
+- 工具条显隐 = 标注态开关：收起时画布 `interactive = false`（`hitTest` 返回 nil），
+  拖拽回到「移动窗口」；这也是 Longshot 里空格的意义。
+- 画布新增两个宿主接口：`interactive`（只读时穿透事件、`mouseDownCanMoveWindow = true`）
+  和 `keyInterceptor`（贴图里 `R` 是缩略图，不能落到画布的 OCR 上）。
+- 键位表抽成 `PinShortcuts.action(for:)`，纯函数，不认字符只认 keyCode（⇧ 会把 `=` 变 `+`）。
+
+**已知限制**
+
+- 标注只在窗口存活期间保留，关掉贴图就没了；数据库结构没动。要留下来用 `⌘D` / `↩` 导出。
+- `Esc` 定成两段（先退标注、再关贴图），比 Longshot 的「一键退出」温和一点。
+
+**验收**
+
+- 单测 19 条：键位映射 10 条、画布两种态 3 条、真窗口上的空格/R/方向键/Esc 6 条
+- 实机：`Baton --pin-probe` 会钉一张测试图并直接进标注态，截屏到 `/tmp/baton-pin.png`
+
+---
+
+
 
 | 项 | 原因 |
 |---|---|
@@ -239,3 +284,4 @@ mouseDown → drag → mouseUp
 | P2 键位对齐 | 已实现 | 见 git log |
 | P3 区域回溯 | 待开工 | — |
 | P4 截图阴影 | 暂缓（档 B 不含） | — |
+| P5 贴图标注 | 已实现，待实机确认 | 见 git log |
