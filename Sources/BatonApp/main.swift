@@ -200,6 +200,16 @@ case "--perm-request":
     print("after=\(PermissionCenter.status(kind).rawValue)")
     exit(0)
 
+case "--pin-suite":
+    // 贴图场景自动跑测：真窗口 + 真鼠标事件，逐条断言并打 PASS/FAIL。
+    // 退出码非 0 表示有用例挂了，方便脚本里卡住。
+    freopen("/tmp/baton-pin-suite.log", "w", stdout)
+    Task { @MainActor in
+        let code = await runPinSuite()
+        exit(code)
+    }
+    app.run()
+
 case "--pin-probe":
     // 贴图标注联调：钉一张测试图 → 缩放 + 空格 → 全屏截一张，确认图还在、工具条落在哪。
     // 走真 store：落库后内存原图会被丢掉，显示改走 blob，这条路径才是线上那条。

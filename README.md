@@ -401,6 +401,10 @@ BATON_STITCH_DEBUG=1 ...                    # 逐帧打印 adv/back/still/miss
 标注按**原图像素**存储，所以窗口放大缩小时标注跟着图像内容走，导出时也不需要换算；
 标注只在窗口存活期间保留，关掉贴图就没了（要留下来就走 `⌘D` / `↩`）。
 
+贴图的交互有一份可重跑的清单：`docs/pin-test-matrix.md`。
+`./dist/Baton.app/Contents/MacOS/Baton --pin-suite` 会开真窗口、发真鼠标事件逐条打
+`PASS/FAIL`，退出码非 0 就是有回归。单测覆盖不了的（事件送到谁、状态有没有跟着变）都在这。
+
 ### OCR / 翻译（P4）
 
 - **⇧⌘O** 截图 OCR、**⇧⌘Y** 截图翻译、**⇧⌘T** 划词翻译（Chrome / Safari / TextEdit 实测可用）

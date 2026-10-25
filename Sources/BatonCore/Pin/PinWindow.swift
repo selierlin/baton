@@ -3,6 +3,30 @@ import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 
+/// 一张贴图的全部可观测状态，给 `Baton --pin-suite` 用。
+///
+/// 压在线上代码里是因为这些状态本来就是私有的：光标、命中、面板位置这些
+/// 「只靠读代码看不出来」的东西，只有真跑起来读一次才知道对不对。
+public struct PinDebugSnapshot {
+    public var frame: CGRect = .zero
+    public var alpha: CGFloat = 1
+    public var zoom: CGFloat = 1
+    public var isThumbnail = false
+    /// 显示位图解出来没有（nil 就是那个「黑框 + 全透明」）
+    public var hasContent = false
+    public var editing = false
+    public var barVisible = false
+    public var barFrame: CGRect = .zero
+    public var canvasInteractive = false
+    /// 画布认为现在该是箭头光标（只读态）
+    public var cursorIsArrow = false
+    /// 图元包围盒（图片像素）
+    public var annotationRects: [CGRect] = []
+    public var selectionRect: CGRect?
+    /// 有没有写进库
+    public var stored = false
+}
+
 /// 贴图管理器：只管创建与回收，窗口生命周期自己管。
 @MainActor
 public final class PinController {
@@ -40,6 +64,47 @@ public final class PinController {
         guard let pin = pins.last else { return "none" }
         return "content=\(pin.debugHasContent) editing=\(pin.debugEditing) bar=\(pin.debugBarVisible)"
     }
+
+    /// 诊断用：完整快照（`--pin-suite` 的断言全读它）。
+    public var debugSnapshot: PinDebugSnapshot? { pins.last?.debugSnapshot }
+
+    /// 诊断用：窗口坐标上这一点归谁处理——画布还是贴图视图。
+    public func debugHitIsCanvas(at point: CGPoint) -> Bool {
+        pins.last?.debugHitIsCanvas(at: point) ?? false
+    }
+
+    /// 诊断用：直接拿画布，场景里要切工具/读文档。
+    public var debugCanvas: AnnotateCanvasView? { pins.last?.debugCanvas }
+
+    public func debugCloseLast() { pins.last?.close() }
+    public func debugCloseAll() { closeAll() }
+
+    /// 诊断用：让贴图窗口成为 key，悬停追踪区才会送事件。
+    public func debugMakeKey() { pins.last?.debugMakeKey() }
+
+    /// 诊断用：按真实响应链发一次按键——标注态进画布（含拦截器），只读态进贴图视图。
+    /// 直接调 `handleKey` 会绕过画布那一层，Esc / ⌘Z 这类「两边都能处理」的键就测不准。
+    @discardableResult
+    public func debugSendKey(_ keyCode: UInt16, command: Bool = false, shift: Bool = false) -> Bool {
+        guard let pin = pins.last else { return false }
+        var flags: NSEvent.ModifierFlags = []
+        if command { flags.insert(.command) }
+        if shift { flags.insert(.shift) }
+        // 画布的 ⌘Z / ⌘D 这些按字符认，合成的空字符会让它们全落到 super 里
+        let characters = Self.debugCharacters[keyCode] ?? ""
+        guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
+                                           timestamp: ProcessInfo.processInfo.systemUptime,
+                                           windowNumber: 0, context: nil, characters: characters,
+                                           charactersIgnoringModifiers: characters,
+                                           isARepeat: false, keyCode: keyCode) else { return false }
+        return pin.debugSendKey(event)
+    }
+
+    /// 常用键的字符形式（只有按键表里按字符判断的那几个需要）
+    private static let debugCharacters: [UInt16: String] = [
+        0: "a", 1: "s", 2: "d", 6: "z", 8: "c", 12: "q", 15: "r",
+        24: "=", 27: "-", 31: "o", 35: "p", 49: " ",
+    ]
 
     /// 全部临时藏起来：`orderOut` 而已，不删库也不改 frame，再切回来原位原样。
     public private(set) var isHidden = false
@@ -287,9 +352,9 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         case .thumbnail:
             toggleThumbnail()
         case .zoomIn:
-            changeZoom(by: max(0.05, zoom * 0.1))
+            changeZoom(byRatio: 1.1)
         case .zoomOut:
-            changeZoom(by: -max(0.05, zoom * 0.1))
+            changeZoom(byRatio: 1 / 1.1)
         case .opacityUp:
             changeOpacity(by: 0.1)
         case .opacityDown:
@@ -343,6 +408,46 @@ final class PinWindowController: NSObject, NSWindowDelegate {
     var debugZoom: CGFloat { zoom }
     /// 诊断用：窗口里到底有没有可画的位图（空白贴图就是这个变 nil）
     var debugHasContent: Bool { view?.hasContent ?? false }
+    var debugCanvas: AnnotateCanvasView? { annotator?.debugCanvas }
+
+    var debugSnapshot: PinDebugSnapshot {
+        var snapshot = PinDebugSnapshot()
+        snapshot.frame = window?.frame ?? .zero
+        snapshot.alpha = window?.alphaValue ?? 0
+        snapshot.zoom = zoom
+        snapshot.isThumbnail = thumbnailRestore != nil
+        snapshot.hasContent = view?.hasContent ?? false
+        snapshot.editing = annotator?.isEditing ?? false
+        snapshot.barVisible = annotator?.debugBarVisible ?? false
+        snapshot.barFrame = annotator?.debugBarFrame ?? .zero
+        snapshot.canvasInteractive = annotator?.debugCanvasInteractive ?? false
+        snapshot.cursorIsArrow = annotator?.debugCursorIsArrow ?? false
+        snapshot.annotationRects = annotator?.document.annotations.map(\.bounds) ?? []
+        snapshot.selectionRect = annotator?.document.selectedAnnotation?.bounds
+        snapshot.stored = pinID != nil
+        return snapshot
+    }
+
+    func debugHitIsCanvas(at point: CGPoint) -> Bool {
+        guard let canvas = annotator?.debugCanvas else { return false }
+        return window?.contentView?.hitTest(point) === canvas
+    }
+
+    func debugMakeKey() {
+        window?.makeKey()
+    }
+
+    /// 复现 AppKit 的派发：编辑态第一响应者是画布，其余是贴图视图。
+    @discardableResult
+    func debugSendKey(_ event: NSEvent) -> Bool {
+        if annotator?.isEditing == true, let canvas = annotator?.debugCanvas {
+            canvas.keyDown(with: event)
+            return true
+        }
+        guard let view else { return false }
+        view.keyDown(with: event)
+        return true
+    }
 
     /// 诊断用：窗口里这一点归谁处理（点用窗口坐标）
     func debugHitView(at point: CGPoint) -> NSView? {
@@ -429,9 +534,20 @@ final class PinWindowController: NSObject, NSWindowDelegate {
     }
 
     private func changeZoom(by delta: CGFloat) {
+        applyZoom(zoom + delta)
+    }
+
+    /// 键盘缩放按比例：`=` 三次再 `-` 三次要回到原样。
+    /// 按「当前值的 10%」加减做不到这点——放大到 1.331 之后连减三次是 0.970，
+    /// 来回几次就漂到别的倍率上，用户只会觉得键位不听话。
+    private func changeZoom(byRatio ratio: CGFloat) {
+        applyZoom(zoom * ratio)
+    }
+
+    private func applyZoom(_ value: CGFloat) {
         guard let window else { return }
         // 下限放到 0.05：缩略图模式要把长边收到 160pt，大图那一档会低于 0.25
-        let next = min(max(zoom + delta, 0.05), 4)
+        let next = min(max(value, 0.05), 4)
         guard abs(next - zoom) > 0.001 else { return }
 
         // 以窗口中心为锚点缩放

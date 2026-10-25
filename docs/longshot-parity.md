@@ -223,6 +223,7 @@ mouseDown → drag → mouseUp
 
 - 单测 19 条：键位映射 10 条、画布两种态 3 条、真窗口上的空格/R/方向键/Esc 6 条
 - 实机：`Baton --pin-probe` 会钉一张测试图并直接进标注态，截屏到 `/tmp/baton-pin.png`
+- 回归清单：`docs/pin-test-matrix.md`（`Baton --pin-suite`，28 条真事件场景 + 5 条人工）
 
 ---
 

@@ -59,6 +59,13 @@ final class PinAnnotator {
 
     /// 诊断用：工具条那条面板是不是真的在屏幕上。
     var debugBarVisible: Bool { isEditing && panel.isVisible }
+    /// 诊断用：工具条面板的屏幕位置。
+    var debugBarFrame: CGRect { panel.frame }
+    var debugCanvas: AnnotateCanvasView? { canvas }
+    var debugCanvasInteractive: Bool { canvas?.interactive ?? false }
+    /// 画布此刻判定该显示什么光标。真机光标由 AppKit 的 cursor rect 落实，
+    /// 后台进程里 `NSCursor.current` 不一定跟着变，所以断言读这个而不是读系统光标。
+    var debugCursorIsArrow: Bool { canvas?.currentCursor === NSCursor.arrow }
 
     // MARK: - 编辑态
 
