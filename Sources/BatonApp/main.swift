@@ -200,6 +200,16 @@ case "--perm-request":
     print("after=\(PermissionCenter.status(kind).rawValue)")
     exit(0)
 
+case "--capture-suite":
+    // 截图态场景自动跑测：框选 + 原地标注，真窗口 + 真鼠标事件。
+    // 不真抓屏（终端里 SCK 拿不到共享内容），用自绘冻结帧铺满主屏。
+    freopen("/tmp/baton-capture-suite.log", "w", stdout)
+    Task { @MainActor in
+        let code = await runCaptureSuite()
+        exit(code)
+    }
+    app.run()
+
 case "--pin-suite":
     // 贴图场景自动跑测：真窗口 + 真鼠标事件，逐条断言并打 PASS/FAIL。
     // 退出码非 0 表示有用例挂了，方便脚本里卡住。

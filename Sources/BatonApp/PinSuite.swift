@@ -1,7 +1,9 @@
 import AppKit
 import BatonCore
 
-/// 贴图场景的自动跑测（`Baton --pin-suite`）。
+/// 场景跑测的公共壳：报告器 + 真鼠标事件。
+///
+/// 贴图（`--pin-suite`）和截图（`--capture-suite`）共用这一份。
 ///
 /// 为什么不用单测：这一轮暴露出来的问题（光标不换、拖拽搬窗口、空格没反应）
 /// 全都不是「算错了」，而是「AppKit 把事件送到了别处」或者「某个私有状态没跟着变」。
@@ -12,7 +14,7 @@ import BatonCore
 /// 这些在 `docs/pin-test-matrix.md` 里标成「人工」。
 
 @MainActor
-final class PinSuiteReport {
+final class ScenarioReport {
     private var passed = 0
     private var failed = 0
     private var skipped = 0
@@ -41,7 +43,7 @@ final class PinSuiteReport {
 // MARK: - 合成鼠标事件
 
 @MainActor
-enum PinEvents {
+enum ScenarioEvents {
     static func sleep(_ ms: UInt64) async {
         try? await Task.sleep(nanoseconds: ms * 1_000_000)
     }
@@ -114,7 +116,7 @@ enum PinEvents {
 
 @MainActor
 func runPinSuite() async -> Int32 {
-    let report = PinSuiteReport()
+    let report = ScenarioReport()
 
     // 临时库：不碰用户真实的贴图记录
     let directory = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -130,11 +132,11 @@ func runPinSuite() async -> Int32 {
     let pins = PinController(store: store)
 
     pins.pin(suiteImage(width: 1200, height: 760), scale: 2)
-    await PinEvents.sleep(900)
+    await ScenarioEvents.sleep(900)
 
     /// 基线：还没画任何东西时导出的图，后面用来证明标注真的烧结进去了
     pins.debugSendKey(36)
-    await PinEvents.sleep(300)
+    await ScenarioEvents.sleep(300)
     let baseline = suitePasteboardImage()
     report.check("P00b", "导出基线可取", baseline != nil,
                  baseline.map { "\($0.width)x\($0.height)" } ?? "nil")
@@ -153,14 +155,14 @@ func runPinSuite() async -> Int32 {
 
     // P02 连按三次 = 会跨过显示位图的缓存档位，取不到图就只剩黑框
     for _ in 0..<3 { pins.debugSendKey(24) }
-    await PinEvents.sleep(400)
+    await ScenarioEvents.sleep(400)
     snapshot = pins.debugSnapshot!
     report.check("P02", "缩放换档位后画面不空白",
                  snapshot.hasContent && snapshot.frame.width > 620,
                  "zoom=\(String(format: "%.2f", snapshot.zoom)) w=\(Int(snapshot.frame.width)) content=\(snapshot.hasContent)")
 
     for _ in 0..<3 { pins.debugSendKey(27) }
-    await PinEvents.sleep(400)
+    await ScenarioEvents.sleep(400)
     snapshot = pins.debugSnapshot!
     report.check("P03", "缩放可回到初始倍率",
                  abs(snapshot.zoom - 1) < 0.01,
@@ -168,9 +170,9 @@ func runPinSuite() async -> Int32 {
 
     // P04 空格进标注
     pins.debugSendKey(49)
-    await PinEvents.sleep(500)
+    await ScenarioEvents.sleep(500)
     pins.debugMakeKey()
-    await PinEvents.sleep(200)
+    await ScenarioEvents.sleep(200)
     snapshot = pins.debugSnapshot!
     let middle = CGPoint(x: snapshot.frame.width / 2, y: snapshot.frame.height / 2)
     report.check("P04", "空格进入标注：工具条浮出、画布接管",
@@ -194,10 +196,10 @@ func runPinSuite() async -> Int32 {
     let canvas = pins.debugCanvas
     let scale = canvas.map { CGFloat($0.baseImage.width) / max($0.bounds.width, 1) } ?? 2
     let pad = canvas?.style.lineWidth ?? 6
-    let start = PinEvents.global(CGPoint(x: 150, y: 120), in: frameBefore)
-    let end = PinEvents.global(CGPoint(x: 350, y: 240), in: frameBefore)
-    await PinEvents.hover(start)
-    await PinEvents.drag(from: start, to: end)
+    let start = ScenarioEvents.global(CGPoint(x: 150, y: 120), in: frameBefore)
+    let end = ScenarioEvents.global(CGPoint(x: 350, y: 240), in: frameBefore)
+    await ScenarioEvents.hover(start)
+    await ScenarioEvents.drag(from: start, to: end)
     snapshot = pins.debugSnapshot!
     let drew = snapshot.annotationRects.first
     report.check("P06", "标注态拖拽：窗口不动 + 画出图元",
@@ -218,22 +220,22 @@ func runPinSuite() async -> Int32 {
 
     // P07 悬停到图元上要变抓手
     let center = CGPoint(x: 250, y: 180)   // 窗口点，正好落在图元内部
-    await PinEvents.hover(PinEvents.global(center, in: frameBefore))
+    await ScenarioEvents.hover(ScenarioEvents.global(center, in: frameBefore))
     report.check("P07", "悬停图元光标变抓手",
                  NSCursor.current === NSCursor.openHand,
                  "cursor=\(NSCursor.current === NSCursor.openHand ? "openHand" : "other")")
 
     // P08 单击选中
-    await PinEvents.click(PinEvents.global(center, in: frameBefore))
+    await ScenarioEvents.click(ScenarioEvents.global(center, in: frameBefore))
     snapshot = pins.debugSnapshot!
     report.check("P08", "单击选中图元", snapshot.selectionRect != nil,
                  "selection=\(snapshot.selectionRect.map { "\(Int($0.width))x\(Int($0.height))" } ?? "nil")")
 
     // P09 拖右下角的手柄改几何
     let beforeResize = snapshot.annotationRects.first
-    let corner = PinEvents.global(CGPoint(x: 350, y: 240), in: frameBefore)
-    let cornerTo = PinEvents.global(CGPoint(x: 400, y: 270), in: frameBefore)
-    await PinEvents.drag(from: corner, to: cornerTo)
+    let corner = ScenarioEvents.global(CGPoint(x: 350, y: 240), in: frameBefore)
+    let cornerTo = ScenarioEvents.global(CGPoint(x: 400, y: 270), in: frameBefore)
+    await ScenarioEvents.drag(from: corner, to: cornerTo)
     snapshot = pins.debugSnapshot!
     let resized = snapshot.annotationRects.first
     report.check("P09", "拖角柄改尺寸",
@@ -247,7 +249,7 @@ func runPinSuite() async -> Int32 {
     // P10 选中后方向键移图元，窗口不动
     let rectBeforeNudge = snapshot.annotationRects.first
     pins.debugSendKey(123)
-    await PinEvents.sleep(200)
+    await ScenarioEvents.sleep(200)
     snapshot = pins.debugSnapshot!
     let nudged = snapshot.annotationRects.first
     report.check("P10", "方向键移图元而不是移窗口",
@@ -258,14 +260,14 @@ func runPinSuite() async -> Int32 {
     // P11 编辑中缩放窗口：画布跟着变大，标注的图像坐标不动
     let rectsBeforeZoom = snapshot.annotationRects
     pins.debugSendKey(24)
-    await PinEvents.sleep(400)
+    await ScenarioEvents.sleep(400)
     snapshot = pins.debugSnapshot!
     let canvasWidth = pins.debugCanvas?.bounds.width ?? 0
     report.check("P11", "标注态缩放：画布跟随、标注粘在图像上",
                  abs(canvasWidth - snapshot.frame.width) < 1.5 && snapshot.annotationRects == rectsBeforeZoom,
                  "canvas=\(Int(canvasWidth)) frame=\(Int(snapshot.frame.width)) 图元不变=\(snapshot.annotationRects == rectsBeforeZoom)")
     pins.debugSendKey(27)
-    await PinEvents.sleep(400)
+    await ScenarioEvents.sleep(400)
 
     // P12 撤销 / 重做（走画布的 ⌘Z，验证拦截器没把 ⌘Z 抢走）
     //
@@ -274,11 +276,11 @@ func runPinSuite() async -> Int32 {
     let resizedSize = pins.debugSnapshot?.annotationRects.first
     pins.debugSendKey(6, command: true)
     pins.debugSendKey(6, command: true)
-    await PinEvents.sleep(300)
+    await ScenarioEvents.sleep(300)
     let undone = pins.debugSnapshot?.annotationRects.first
     pins.debugSendKey(6, command: true, shift: true)
     pins.debugSendKey(6, command: true, shift: true)
-    await PinEvents.sleep(300)
+    await ScenarioEvents.sleep(300)
     let redone = pins.debugSnapshot?.annotationRects.first
     report.check("P12", "⌘Z 撤销 / ⇧⌘Z 重做归画布",
                  undone.map { abs($0.width - (beforeResize?.width ?? 0)) < 3 } ?? false
@@ -288,7 +290,7 @@ func runPinSuite() async -> Int32 {
 
     // P13 Esc：有选中先取消选中，不退标注
     pins.debugSendKey(53)
-    await PinEvents.sleep(250)
+    await ScenarioEvents.sleep(250)
     snapshot = pins.debugSnapshot!
     report.check("P13", "Esc 第一下只取消选中",
                  snapshot.selectionRect == nil && snapshot.editing,
@@ -296,7 +298,7 @@ func runPinSuite() async -> Int32 {
 
     // P14 Esc：没有选中才退标注，窗口还在
     pins.debugSendKey(53)
-    await PinEvents.sleep(300)
+    await ScenarioEvents.sleep(300)
     snapshot = pins.debugSnapshot!
     report.check("P14", "Esc 第二下退标注、不关窗",
                  !snapshot.editing && !snapshot.barVisible && snapshot.frame != .zero
@@ -309,8 +311,8 @@ func runPinSuite() async -> Int32 {
     // 断言读画布的判定而不是 `NSCursor.current`：后台进程里 AppKit 未必真的换掉
     // 系统光标（试过，改坏了也不变），读系统光标等于给自己一个永远绿的用例。
     // 真实光标形状那条路由单测 `PinCanvasInteractivityTests` 守着。
-    await PinEvents.hover(PinEvents.global(center, in: frameBefore))
-    await PinEvents.hover(PinEvents.global(CGPoint(x: 260, y: 190), in: frameBefore))
+    await ScenarioEvents.hover(ScenarioEvents.global(center, in: frameBefore))
+    await ScenarioEvents.hover(ScenarioEvents.global(CGPoint(x: 260, y: 190), in: frameBefore))
     report.check("P15", "退出标注后光标判定为箭头",
                  pins.debugSnapshot?.cursorIsArrow == true,
                  "cursorIsArrow=\(pins.debugSnapshot?.cursorIsArrow ?? false)"
@@ -318,8 +320,8 @@ func runPinSuite() async -> Int32 {
 
     // P16 退出标注后拖拽能搬窗口
     let beforeDrag = pins.debugSnapshot!.frame
-    await PinEvents.drag(from: PinEvents.global(CGPoint(x: 250, y: 180), in: beforeDrag),
-                         to: PinEvents.global(CGPoint(x: 290, y: 150), in: beforeDrag))
+    await ScenarioEvents.drag(from: ScenarioEvents.global(CGPoint(x: 250, y: 180), in: beforeDrag),
+                         to: ScenarioEvents.global(CGPoint(x: 290, y: 150), in: beforeDrag))
     let afterDrag = pins.debugSnapshot!.frame
     report.check("P16", "退出标注后拖拽搬窗口",
                  abs(afterDrag.minX - beforeDrag.minX - 40) < 1.5
@@ -327,10 +329,10 @@ func runPinSuite() async -> Int32 {
                  "Δ=\(Int(afterDrag.minX - beforeDrag.minX)),\(Int(afterDrag.minY - beforeDrag.minY))")
 
     // P17 滚轮缩放（只读态）
-    let hoverPoint = PinEvents.global(CGPoint(x: 250, y: 180), in: afterDrag)
-    await PinEvents.hover(hoverPoint)
+    let hoverPoint = ScenarioEvents.global(CGPoint(x: 250, y: 180), in: afterDrag)
+    await ScenarioEvents.hover(hoverPoint)
     let zoomBeforeScroll = pins.debugSnapshot!.zoom
-    await PinEvents.scroll(lines: 6, at: hoverPoint)
+    await ScenarioEvents.scroll(lines: 6, at: hoverPoint)
     let zoomAfterScroll = pins.debugSnapshot!.zoom
     report.check("P17", "滚轮缩放",
                  zoomAfterScroll > zoomBeforeScroll + 0.01 && pins.debugSnapshot!.hasContent,
@@ -339,9 +341,9 @@ func runPinSuite() async -> Int32 {
     // P18 双击在 100% 与「适配屏幕」之间切
     pins.debugSendKey(24)          // 先放大一点，确保当前不是 100%
     pins.debugSendKey(24)
-    await PinEvents.sleep(350)
+    await ScenarioEvents.sleep(350)
     let zoomBeforeDouble = pins.debugSnapshot!.zoom
-    await PinEvents.doubleClick(hoverPoint)
+    await ScenarioEvents.doubleClick(hoverPoint)
     let zoomAfterDouble = pins.debugSnapshot!.zoom
     report.check("P18", "双击回到 100%",
                  zoomBeforeDouble > 1.05 && abs(zoomAfterDouble - 1) < 0.02,
@@ -349,10 +351,10 @@ func runPinSuite() async -> Int32 {
 
     // P19 R 进缩略图：长边收到 160，并且自动退出标注
     pins.debugSendKey(49)          // 先进标注
-    await PinEvents.sleep(350)
+    await ScenarioEvents.sleep(350)
     report.check("P19a", "R 之前处于标注态", pins.debugSnapshot?.editing == true)
     pins.debugSendKey(15)          // R
-    await PinEvents.sleep(500)
+    await ScenarioEvents.sleep(500)
     snapshot = pins.debugSnapshot!
     let longest = max(snapshot.frame.width, snapshot.frame.height)
     report.check("P19", "R 缩略图：长边约 160 且退标注",
@@ -361,7 +363,7 @@ func runPinSuite() async -> Int32 {
 
     // P20 再按 R 回到原倍率
     pins.debugSendKey(15)
-    await PinEvents.sleep(500)
+    await ScenarioEvents.sleep(500)
     snapshot = pins.debugSnapshot!
     report.check("P20", "再按 R 恢复原倍率",
                  !snapshot.isThumbnail && abs(snapshot.zoom - 1) < 0.01,
@@ -369,7 +371,7 @@ func runPinSuite() async -> Int32 {
 
     // P21 导出：原图像素 + 标注真的烘进去了
     pins.debugSendKey(36)
-    await PinEvents.sleep(400)
+    await ScenarioEvents.sleep(400)
     let exported = suitePasteboardImage()
     var diff = -1
     if let baseline, let exported, baseline.width == exported.width, baseline.height == exported.height {
@@ -382,7 +384,7 @@ func runPinSuite() async -> Int32 {
     // P22 不透明度
     let alphaBefore = pins.debugSnapshot!.alpha
     pins.debugSendKey(27, command: true)
-    await PinEvents.sleep(250)
+    await ScenarioEvents.sleep(250)
     let alphaAfter = pins.debugSnapshot!.alpha
     report.check("P22", "⌘- 降低不透明度",
                  abs(alphaAfter - (alphaBefore - 0.1)) < 0.02,
@@ -390,17 +392,17 @@ func runPinSuite() async -> Int32 {
 
     // P23 隐藏 / 显示
     pins.setHidden(true)
-    await PinEvents.sleep(250)
+    await ScenarioEvents.sleep(250)
     let hidden = pins.isHidden
     pins.setHidden(false)
-    await PinEvents.sleep(350)
+    await ScenarioEvents.sleep(350)
     report.check("P23", "隐藏/显示所有贴图",
                  hidden && !pins.isHidden && pins.count == 1,
                  "hidden=\(hidden) count=\(pins.count)")
 
     // P24 关掉：子窗口和库记录一起走
     pins.debugCloseLast()
-    await PinEvents.sleep(400)
+    await ScenarioEvents.sleep(400)
     report.check("P24", "关闭后不留贴图", pins.count == 0, "count=\(pins.count)")
 
     // 人工项：这里明确列出来，免得被当成都验过了

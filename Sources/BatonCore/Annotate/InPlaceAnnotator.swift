@@ -49,6 +49,108 @@ public final class InPlaceAnnotator {
 
     public var isActive: Bool { canvas != nil }
 
+    // MARK: - 诊断
+
+    /// 场景跑测（`Baton --capture-suite`）读的一次性快照。
+    ///
+    /// 截图态的坑基本都藏在「画布/工具条/遮罩三者有没有跟着选区走」，
+    /// 所以这里把三者的几何一次交出去，断言不用去猜私有状态。
+    public struct Snapshot {
+        public init() {}
+
+        public var active = false
+        public var tool = ""
+        /// 图片像素 ÷ 画布点宽
+        public var scale: CGFloat = 1
+        /// 当前线宽（图片像素），图元包围盒按它外扩
+        public var lineWidth: CGFloat = 0
+        public var hostBounds: CGRect = .zero
+        /// 画布 frame（宿主本地坐标，Cocoa 左下原点）
+        public var canvasFrame: CGRect = .zero
+        /// 当前选区（全局屏幕坐标，左上原点）
+        public var selectionGlobal: CGRect = .zero
+        /// 当前裁剪在整屏位图里的像素原点（左上原点）
+        public var pixelOrigin = CGPoint.zero
+        public var displayOrigin = CGPoint.zero
+        public var barFrame: CGRect = .zero
+        public var propertiesFrame: CGRect = .zero
+        public var barVisible = false
+        public var propertiesVisible = false
+        /// 8 个手柄的图层挂上了没有
+        public var handlesVisible = false
+        /// 图元包围盒（图片像素，左上原点）
+        public var annotationRects: [CGRect] = []
+        /// 选中图元的包围盒（图片像素）
+        public var selectionRect: CGRect?
+        public var canUndo = false
+        public var canRedo = false
+
+        /// 图片像素 → 全局屏幕坐标（点）
+        public func screenPoint(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: displayOrigin.x + (pixelOrigin.x + point.x) / scale,
+                    y: displayOrigin.y + (pixelOrigin.y + point.y) / scale)
+        }
+
+        public func screenRect(forImage rect: CGRect) -> CGRect {
+            CGRect(origin: screenPoint(rect.origin),
+                   size: CGSize(width: rect.width / scale, height: rect.height / scale))
+        }
+
+        public var annotationScreenRects: [CGRect] {
+            annotationRects.map(screenRect(forImage:))
+        }
+    }
+
+    public var debugSnapshot: Snapshot {
+        var snapshot = Snapshot()
+        guard let canvas, let result, let hostView else { return snapshot }
+        snapshot.active = true
+        snapshot.tool = canvas.tool.rawValue
+        snapshot.scale = scale
+        snapshot.lineWidth = canvas.style.lineWidth
+        snapshot.hostBounds = hostView.bounds
+        snapshot.canvasFrame = canvas.frame
+        snapshot.selectionGlobal = result.screenRect
+        snapshot.pixelOrigin = result.pixelRect.origin
+        snapshot.displayOrigin = result.display.screenFrame.origin
+        snapshot.barFrame = bar?.frame ?? .zero
+        snapshot.propertiesFrame = properties?.frame ?? .zero
+        snapshot.barVisible = bar?.window != nil && bar?.superview != nil
+        snapshot.propertiesVisible = properties.map { $0.window != nil && !$0.isHidden } ?? false
+        snapshot.handlesVisible = selectionChrome.path != nil && selectionChrome.superlayer != nil
+        snapshot.annotationRects = document.annotations.map(\.bounds)
+        snapshot.selectionRect = document.selectedAnnotation?.bounds
+        snapshot.canUndo = document.canUndo
+        snapshot.canRedo = document.canRedo
+        return snapshot
+    }
+
+    /// 按画布的键位表发一次按键。走 `canvas.keyDown` 而不是系统事件：
+    /// 这里要验的是「键位有没有接上」，事件投递那一层在真机上另有覆盖。
+    @discardableResult
+    public func debugSendKey(_ keyCode: UInt16, command: Bool = false, shift: Bool = false) -> Bool {
+        guard let canvas else { return false }
+        var flags: NSEvent.ModifierFlags = []
+        if command { flags.insert(.command) }
+        if shift { flags.insert(.shift) }
+        let characters = Self.debugCharacters[keyCode] ?? ""
+        guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
+                                           timestamp: ProcessInfo.processInfo.systemUptime,
+                                           windowNumber: canvas.window?.windowNumber ?? 0,
+                                           context: nil, characters: characters,
+                                           charactersIgnoringModifiers: characters,
+                                           isARepeat: false, keyCode: keyCode) else { return false }
+        canvas.keyDown(with: event)
+        return true
+    }
+
+    /// 画布按字符判断的那几个键需要带上字符，否则会落到 `super` 里
+    private static let debugCharacters: [UInt16: String] = [
+        0: "a", 1: "s", 2: "d", 6: "z", 8: "c", 9: "v", 12: "q", 15: "r",
+        18: "1", 19: "2", 20: "3", 21: "4", 22: "6", 23: "5", 26: "7", 28: "8",
+        24: "=", 27: "-", 31: "o", 35: "p", 49: " ",
+    ]
+
     /// - Returns: 覆盖层不可用（没有对应屏的宿主）时返回 false，调用方可以退回弹窗模式。
     @discardableResult
     public func present(result: CaptureResult, overlay: OverlayController) -> Bool {

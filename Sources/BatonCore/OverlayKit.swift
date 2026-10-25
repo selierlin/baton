@@ -204,6 +204,32 @@ public final class OverlayController {
     /// 当前停留的屏幕（编辑态下就是被框住的那块屏）。
     public var currentDisplayID: CGDirectDisplayID? { activeDisplayID }
 
+    // MARK: - 诊断
+
+    /// 场景跑测用：覆盖层还在不在屏幕上。
+    public var debugOverlayVisible: Bool { !windows.isEmpty }
+
+    /// 场景跑测用：锁定的选区（全局屏幕坐标）。遮罩和边框都按它画，
+    /// 所以「选区改了但遮罩没跟上」这类问题就看这个值。
+    public var debugLockedSelection: CGRect? {
+        guard let id = activeDisplayID ?? views.keys.first else { return nil }
+        return views[id]?.debugLockedSelection
+    }
+
+    /// 场景跑测用：按覆盖层自己的键位表发一次按键（框选阶段的 Esc / F / HJKL）。
+    @discardableResult
+    public func debugSendKey(_ keyCode: UInt16) -> Bool {
+        guard let view = windows.first?.contentView,
+              let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                           timestamp: ProcessInfo.processInfo.systemUptime,
+                                           windowNumber: windows.first?.windowNumber ?? 0,
+                                           context: nil, characters: "",
+                                           charactersIgnoringModifiers: "", isARepeat: false,
+                                           keyCode: keyCode) else { return false }
+        view.keyDown(with: event)
+        return true
+    }
+
     /// 模态面板（保存对话框）要压在覆盖层之上，先临时把层降下来。
     public func setWindowLevel(_ level: NSWindow.Level) {
         for window in windows {
@@ -299,6 +325,8 @@ final class OverlayView: NSView {
     /// 框定后保留选区视觉，不再跟随鼠标重算。
     var retainsSelection = false
     private var lockedSelection: CGRect?     // CG 全局坐标
+    /// 诊断用：当前锁定的选区（编辑态下就是画布底下那块）
+    var debugLockedSelection: CGRect? { lockedSelection }
     /// 原地标注挂上来的画布。手柄外半边落在它外面，事件与光标要从这里转过去。
     weak var annotationCanvas: NSView?
 
