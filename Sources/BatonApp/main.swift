@@ -195,7 +195,12 @@ case "--pin-probe":
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
             pins.debugSendKeyLast(49)                     // 空格调工具条
-            print("space \(pins.debugLastState)")
+            print("space-on \(pins.debugLastState) crosshair=\(NSCursor.current === NSCursor.crosshair)")
+            fflush(stdout)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            pins.debugSendKeyLast(49)                     // 再按一次收工具条
+            print("space-off \(pins.debugLastState) arrow=\(NSCursor.current === NSCursor.arrow)")
             fflush(stdout)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {

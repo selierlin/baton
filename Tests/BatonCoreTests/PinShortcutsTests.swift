@@ -119,6 +119,44 @@ final class PinCanvasInteractivityTests: XCTestCase {
         XCTAssertTrue(commands.isEmpty, "被宿主接管后画布不该再按自己的键位表处理")
     }
 
+    /// 收起工具条后，悬停高亮和光标形状都得跟着退——用户看到的是
+    /// 「空格收起了工具条，鼠标还是十字，划到图元上还变成抓手」。
+    func testLeavingEditingDropsHoverAndCursor() {
+        let canvas = makeCanvasWithRectangle()
+        canvas.interactive = true
+        canvas.mouseMoved(with: moveEvent(at: CGPoint(x: 100, y: 50)))
+        XCTAssertNotNil(canvas.hoveredID, "编辑态划过图元要亮")
+        XCTAssertTrue(canvas.currentCursor === NSCursor.openHand)
+
+        canvas.interactive = false
+        XCTAssertNil(canvas.hoveredID, "退标注要把悬停清掉")
+        XCTAssertTrue(canvas.currentCursor === NSCursor.arrow, "退标注要回到箭头")
+    }
+
+    /// 追踪区不看 `hitTest`：只读态的 `mouseMoved` 照样送到画布，
+    /// 画布必须自己闭眼，否则已经「不归它管」的区域还在改光标。
+    func testReadOnlyCanvasIgnoresHover() {
+        let canvas = makeCanvasWithRectangle()
+        canvas.interactive = false
+        canvas.mouseMoved(with: moveEvent(at: CGPoint(x: 100, y: 50)))
+        XCTAssertNil(canvas.hoveredID)
+        XCTAssertTrue(canvas.currentCursor === NSCursor.arrow)
+    }
+
+    private func makeCanvasWithRectangle() -> AnnotateCanvasView {
+        let canvas = makeCanvas()
+        canvas.document.add(Annotation(kind: .rectangle(CGRect(x: 10, y: 10, width: 180, height: 80)),
+                                       style: canvas.style))
+        return canvas
+    }
+
+    private func moveEvent(at point: CGPoint) -> NSEvent {
+        NSEvent.mouseEvent(with: .mouseMoved, location: point, modifierFlags: [],
+                           timestamp: ProcessInfo.processInfo.systemUptime,
+                           windowNumber: 0, context: nil, eventNumber: 0,
+                           clickCount: 0, pressure: 0)!
+    }
+
     private func keyEvent(_ keyCode: UInt16) -> NSEvent {
         NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
                          timestamp: ProcessInfo.processInfo.systemUptime,

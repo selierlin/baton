@@ -37,7 +37,16 @@ public final class AnnotateCanvasView: NSView {
 
     /// 只读展示时置 false：标注照画，鼠标事件穿过去给宿主。
     /// 贴图窗口在「没进标注」时靠它把拖拽还给窗口本身（拖图挪位置）。
-    public var interactive = true
+    public var interactive = true {
+        didSet {
+            guard interactive != oldValue else { return }
+            // 退标注时悬停高亮和光标形状要一起退。追踪区不吃 `hitTest`，
+            // 光标区也不吃——两样都不清，贴图上会一直留着十字和抓手。
+            setHovered(nil)
+            window?.invalidateCursorRects(for: self)
+            currentCursor.set()
+        }
+    }
 
     /// 视图点 → 图片像素
     private var pixelScale: CGFloat {
@@ -89,10 +98,14 @@ public final class AnnotateCanvasView: NSView {
     public override var mouseDownCanMoveWindow: Bool { !interactive }
 
     public override func resetCursorRects() {
+        // 只读态一个光标区都不留：留一个十字，贴图窗口上就永远是十字
+        guard interactive else { return }
         addCursorRect(bounds, cursor: currentCursor)
     }
 
-    private var currentCursor: NSCursor {
+    /// 当前该显示的光标。只读态恒为箭头——事件已经不归画布，形状也不该归它。
+    var currentCursor: NSCursor {
+        guard interactive else { return .arrow }
         if hoveredID != nil { return .openHand }
         if adjustableSelection, let anchor = hoveredAnchor() { return anchor.cursor }
         return tool == .text || tool == .labelText ? .iBeam : .crosshair
@@ -417,6 +430,9 @@ public final class AnnotateCanvasView: NSView {
     }
 
     public override func mouseMoved(with event: NSEvent) {
+        // 追踪区照样会收到移动事件（它不看 hitTest），只读态必须自己闭眼，
+        // 否则收起工具条后鼠标划过图元还是会变成抓手
+        guard interactive else { return }
         guard dragStart == nil, movingOriginal == nil, resizingOriginal == nil,
               activeAnchor == nil else { return }
         let point = convert(event.locationInWindow, from: nil)
