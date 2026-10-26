@@ -212,6 +212,8 @@ public final class InPlaceAnnotator {
         self.canvas = canvas
         // 手柄有一半骑在选区边界外侧，事件要从宿主转进来
         host.annotationCanvas = canvas
+        // 框外拖边也走同一条路：宿主算出新矩形，这里重裁底图、重排浮条
+        host.onSelectionResize = { [weak self] rect in self?.adjustSelection(to: rect) }
 
         let bar = AnnotateBarView()
         // 覆盖层是手动摆 frame 的，不跑 Auto Layout
@@ -237,7 +239,11 @@ public final class InPlaceAnnotator {
         layoutBars(around: local, in: host.bounds)
         updateSelectionChrome(local)
 
-        host.window?.makeKey()
+        // 光标只能由前台进程改：进程不在前台时 NSCursor.set() 会被系统丢掉，
+        // 光标矩形也不生效，框外就会一直卡着框选阶段的十字。覆盖层本来就是模态的，
+        // 进场时把前台抢回来。
+        NSApp.activate(ignoringOtherApps: true)
+        host.window?.makeKeyAndOrderFront(nil)
         host.window?.makeFirstResponder(canvas)
         refreshBar()
         // 框选阶段用的是十字；锁定后光标矩形虽然改成箭头，但鼠标没跨过边界
@@ -531,6 +537,7 @@ public final class InPlaceAnnotator {
         properties?.removeFromSuperview()
         selectionChrome.removeFromSuperlayer()
         hostView?.annotationCanvas = nil
+        hostView?.onSelectionResize = nil
         canvas = nil
         bar = nil
         properties = nil
@@ -547,6 +554,7 @@ public final class InPlaceAnnotator {
         properties?.removeFromSuperview()
         selectionChrome.removeFromSuperlayer()
         hostView?.annotationCanvas = nil
+        hostView?.onSelectionResize = nil
         canvas = nil
         bar = nil
         properties = nil

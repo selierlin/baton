@@ -329,6 +329,10 @@ final class OverlayView: NSView {
     var debugLockedSelection: CGRect? { lockedSelection }
     /// 原地标注挂上来的画布。手柄外半边落在它外面，事件与光标要从这里转过去。
     weak var annotationCanvas: NSView?
+    /// 从选区外侧拖边改尺寸：交给 InPlaceAnnotator 重裁底图、重排工具条。
+    var onSelectionResize: ((CGRect) -> Void)?
+    /// 正在从框外拖的那一下：起手的方向 + 动之前的选区（CG 全局坐标）
+    private var outsideDrag: (anchor: SelectionAnchor, origin: CGRect)?
 
     /// 悬停拾取的粒度。默认「窗口区域」（AX 元素，最精确），⇥ 切到整窗。
     private var pickKind: PickTarget.Kind = .element
@@ -521,29 +525,84 @@ final class OverlayView: NSView {
             removeTrackingArea(area)
         }
         addTrackingArea(NSTrackingArea(rect: .zero,
-                                       options: [.mouseMoved, .activeAlways, .inVisibleRect],
+                                       options: [.mouseMoved, .cursorUpdate,
+                                                 .activeAlways, .inVisibleRect],
                                        owner: self,
                                        userInfo: nil))
     }
 
     override func resetCursorRects() {
-        // 锁定后的整屏光标不交给光标矩形：AppKit 只在跨过矩形边界那一刻重设，
-        // 从框选阶段的十字切过来时不会自动换成箭头，会一直卡着十字。
-        // 改由 `syncLockedCursor()` 在每次鼠标移动时自己推。
-        if lockedSelection == nil {
-            addCursorRect(bounds, cursor: .crosshair)
+        // 框选阶段整屏十字；锁定后没有画布（长截图等）就一个都不留。
+        guard let canvas = annotationCanvas, lockedSelection != nil else {
+            if lockedSelection == nil { addCursorRect(bounds, cursor: .crosshair) }
+            return
         }
 
-        // 选区手柄骑在边界上，朝外那半边落在画布外面，画布自己的 cursor rect 管不到，
-        // 这里补一圈。后加的先命中，所以能压住上面的整屏箭头。
-        guard lockedSelection != nil, let canvas = annotationCanvas else { return }
+        // 锁定后整屏先铺一层箭头：光标矩形是 AppKit 唯一会主动应用的机制，
+        // 鼠标从框内走到框外正好跨过画布边界，这一步必定生效。
+        addCursorRect(bounds, cursor: .arrow)
+
+        // 框外按方向分片登记缩放光标（Longshot 就是这样：离开选区即变 ↔ ↕）。
+        // 先边、后角——后加的先命中，角压在边上面。
+        let rect = canvas.frame
+        let edges: [(SelectionAnchor, CGRect)] = [
+            (.left, CGRect(x: bounds.minX, y: bounds.minY,
+                           width: max(rect.minX - bounds.minX, 0), height: bounds.height)),
+            (.right, CGRect(x: rect.maxX, y: bounds.minY,
+                            width: max(bounds.maxX - rect.maxX, 0), height: bounds.height)),
+            (.top, CGRect(x: bounds.minX, y: rect.maxY,
+                          width: bounds.width, height: max(bounds.maxY - rect.maxY, 0))),
+            (.bottom, CGRect(x: bounds.minX, y: bounds.minY,
+                             width: bounds.width, height: max(rect.minY - bounds.minY, 0))),
+        ]
+        for (anchor, box) in edges where box.width > 0 && box.height > 0 {
+            addCursorRect(box, cursor: anchor.cursor)
+        }
+        let corners: [(SelectionAnchor, CGRect)] = [
+            (.topLeft, CGRect(x: bounds.minX, y: rect.maxY,
+                              width: max(rect.minX - bounds.minX, 0),
+                              height: max(bounds.maxY - rect.maxY, 0))),
+            (.topRight, CGRect(x: rect.maxX, y: rect.maxY,
+                               width: max(bounds.maxX - rect.maxX, 0),
+                               height: max(bounds.maxY - rect.maxY, 0))),
+            (.bottomLeft, CGRect(x: bounds.minX, y: bounds.minY,
+                                 width: max(rect.minX - bounds.minX, 0),
+                                 height: max(rect.minY - bounds.minY, 0))),
+            (.bottomRight, CGRect(x: rect.maxX, y: bounds.minY,
+                                  width: max(bounds.maxX - rect.maxX, 0),
+                                  height: max(rect.minY - bounds.minY, 0))),
+        ]
+        for (anchor, box) in corners where box.width > 0 && box.height > 0 {
+            addCursorRect(box, cursor: anchor.cursor)
+        }
+
+        // 手柄骑在边界上，朝外那半边落在画布外面，画布自己的 cursor rect 管不到，
+        // 这里补一圈，压住上面的分片。
         for anchor in SelectionAnchor.allCases {
-            let center = SelectionGeometry.point(of: anchor, in: canvas.frame)
+            let center = anchorPoint(anchor, in: rect)
             let box = CGRect(x: center.x - SelectionChrome.reach,
                              y: center.y - SelectionChrome.reach,
                              width: SelectionChrome.reach * 2,
                              height: SelectionChrome.reach * 2)
             addCursorRect(box, cursor: anchor.cursor)
+        }
+    }
+
+    /// 手柄中心。宿主是左下原点，`SelectionAnchor` 的「上」对应 `maxY`——
+    /// 直接用 `SelectionGeometry.point` 会把四个角的缩放光标左右镜像。
+    private func anchorPoint(_ anchor: SelectionAnchor, in rect: CGRect) -> CGPoint {
+        let x = anchor.movesLeft ? rect.minX : (anchor.movesRight ? rect.maxX : rect.midX)
+        let y = anchor.movesTop ? rect.maxY : (anchor.movesBottom ? rect.minY : rect.midY)
+        return CGPoint(x: x, y: y)
+    }
+
+    /// 光标矩形只在跨过矩形边界那一刻生效，从框选阶段的十字切过来时鼠标往往还没动过，
+    /// 光标会一直卡着十字。每次需要重设时（进窗、鼠标移动）自己再推一遍兜底。
+    override func cursorUpdate(with event: NSEvent) {
+        if lockedSelection != nil {
+            syncLockedCursor()
+        } else if mode != .bare {
+            NSCursor.crosshair.set()
         }
     }
 
@@ -564,11 +623,11 @@ final class OverlayView: NSView {
 
     // MARK: - 光标
 
-    /// 锁定选区后该亮什么光标：框内归画布（十字 / 文本 I 形 / 抓手），
-    /// 框外和两条工具条上是普通箭头。
+    /// 锁定选区后该亮什么光标：框内归画布（十字 / 文本 I 形 / 抓手 / 手柄），
+    /// 框外按方向亮缩放箭头，浮条上是普通箭头。
     ///
     /// 光标矩形只在「跨过矩形边界」那一刻生效。框选阶段整屏都是十字，锁定后
-    /// 宿主的光标矩形虽然改成了箭头，但鼠标既没动也没跨边界，十字就一直挂着——
+    /// 宿主的光标矩形虽然改了，但鼠标既没动也没跨边界，十字就一直挂着——
     /// 表现就是「在框外、工具条上还是十字，得先进框再出来才恢复」。
     /// 所以这里每次鼠标移动自己推一次，不指望 AppKit 的增量更新。
     func syncLockedCursor() {
@@ -579,12 +638,41 @@ final class OverlayView: NSView {
         let inCanvas = canvas.convert(point, from: self)
         if canvas.bounds.contains(inCanvas) {
             canvas.currentCursor.set()
-        } else if SelectionGeometry.anchor(at: inCanvas, in: canvas.bounds,
-                                           tolerance: SelectionChrome.reach) != nil {
-            // 手柄骑在边界上，形状交给它的光标矩形（八向缩放箭头）
-            return
+        } else if let anchor = outsideResizeAnchor(at: point) {
+            anchor.cursor.set()
         } else {
             NSCursor.arrow.set()
+        }
+    }
+
+    /// 框外这一点该按哪个方向缩放，nil 表示不该给缩放光标。
+    ///
+    /// Longshot 框外整片都能拖边：左/右 ↔、上/下 ↕、四个角斜向，按住拖就把那条边
+    /// 跟到指针上。所以这里按「在选区的哪一侧」判方向，角优先于边。
+    /// 框内归画布、浮条上是按钮，都不参与。
+    func outsideResizeAnchor(at local: CGPoint) -> SelectionAnchor? {
+        guard lockedSelection != nil, let canvas = annotationCanvas else { return nil }
+        let rect = canvas.frame
+        guard !rect.contains(local) else { return nil }
+        for sub in subviews where sub !== canvas && !sub.isHidden
+            && sub.frame.contains(local) {
+            return nil
+        }
+        // 宿主是左下原点：y 越大越靠屏幕上方，和 SelectionAnchor 的语义一致
+        let above = local.y > rect.maxY
+        let below = local.y < rect.minY
+        let leftSide = local.x < rect.minX
+        let rightSide = local.x > rect.maxX
+        switch (above, below, leftSide, rightSide) {
+        case (true, _, true, _): return .topLeft
+        case (true, _, _, true): return .topRight
+        case (_, true, true, _): return .bottomLeft
+        case (_, true, _, true): return .bottomRight
+        case (true, _, _, _): return .top
+        case (_, true, _, _): return .bottom
+        case (_, _, true, _): return .left
+        case (_, _, _, true): return .right
+        default: return nil
         }
     }
 
@@ -687,7 +775,14 @@ final class OverlayView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         // 编辑态：选区已锁定，画布自己收事件，遮罩上的点击不重开框选
-        if lockedSelection != nil { return }
+        if lockedSelection != nil {
+            // 框外按住 = 拖那条边（Longshot 的行为：光标已经是 ↔/↕，按下去就能扩）
+            let local = convert(event.locationInWindow, from: nil)
+            if let anchor = outsideResizeAnchor(at: local), let origin = lockedSelection {
+                outsideDrag = (anchor, origin)
+            }
+            return
+        }
         // 尺子态：交互由挂在上面子视图负责，这里不参与
         if mode == .bare { return }
         if mode == .pick {
@@ -718,6 +813,14 @@ final class OverlayView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        // 框外拖边：那条边跟到指针上，对边不动
+        if let drag = outsideDrag {
+            let target = SelectionGeometry.resized(drag.origin, anchor: drag.anchor,
+                                                   to: globalPoint(for: event),
+                                                   limit: captured.display.screenFrame)
+            if target != lockedSelection { onSelectionResize?(target) }
+            return
+        }
         guard mode == .area else { return }
         let point = globalPoint(for: event)
         // 一拖动就放弃悬停目标：用户这时候要的是自由框选，不是那个窗口
@@ -732,6 +835,11 @@ final class OverlayView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        // 框外拖边收尾：选区已经跟着改过了，这一下不算「空选区取消」
+        if outsideDrag != nil {
+            outsideDrag = nil
+            return
+        }
         guard mode == .area else { return }
         // 编辑态：选区已锁定，这一下可能是工具条里的自绘控件（颜色圆点、分段、下拉）
         // 把 mouseUp 顺着响应链冒泡上来的。此处若继续走「空选区 = 取消」，
