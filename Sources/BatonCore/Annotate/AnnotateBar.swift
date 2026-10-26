@@ -166,6 +166,13 @@ final class AnnotateBarView: NSView {
 
     override var isFlipped: Bool { true }
 
+    /// 浮条压在截图内容上：鼠标移上来要回到普通箭头，画布那边才是十字。
+    /// 不能只靠宿主的光标矩形——锁定选区后那块矩形可能还停在框选阶段的十字，
+    /// AppKit 又只在跨过矩形边界时才重设，落在这里就会一直是十字。
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .arrow)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
                                 xRadius: 5, yRadius: 5)

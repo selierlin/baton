@@ -49,6 +49,26 @@ public final class InPlaceAnnotator {
 
     public var isActive: Bool { canvas != nil }
 
+    /// 上一次用的工具，跨会话记住：换过笔之后下次进来还是那支，
+    /// 每次都从矩形开始等于让用户重选一遍。
+    ///
+    /// 选择 / 取色不放进来——它们不是「画什么」，记住它们下次进来
+    /// 会得到一个没有属性条也不落图元的状态。
+    private static let lastToolKey = "annotate.lastTool"
+
+    private static var lastTool: AnnotateTool {
+        guard let raw = UserDefaults.standard.string(forKey: lastToolKey),
+              let tool = AnnotateTool(rawValue: raw),
+              tool != .select, tool != .colorPick else { return .rectangle }
+        return tool
+    }
+
+    private static func remember(tool: AnnotateTool) {
+        guard tool != .select, tool != .colorPick else { return }
+        guard UserDefaults.standard.string(forKey: lastToolKey) != tool.rawValue else { return }
+        UserDefaults.standard.set(tool.rawValue, forKey: lastToolKey)
+    }
+
     // MARK: - 诊断
 
     /// 场景跑测（`Baton --capture-suite`）读的一次性快照。
@@ -178,7 +198,7 @@ public final class InPlaceAnnotator {
         let canvas = AnnotateCanvasView(image: image, document: document, style: style)
         // 底图由覆盖层的冻结帧提供，画布只画标注，避免取整误差造成重影
         canvas.drawsBaseImage = false
-        canvas.tool = .rectangle
+        canvas.tool = Self.lastTool
         canvas.frame = local
         // 圈完之后选区还能拖：8 个手柄改尺寸，方向键移/扩缩。
         // 画布拿全局坐标跟宿主对话，自己不用关心屏幕坐标系怎么翻转。
@@ -220,6 +240,11 @@ public final class InPlaceAnnotator {
         host.window?.makeKey()
         host.window?.makeFirstResponder(canvas)
         refreshBar()
+        // 框选阶段用的是十字；锁定后光标矩形虽然改成箭头，但鼠标没跨过边界
+        // 就不会生效，进场先按当前位置推一次。窗口的光标矩形也要强制重算一次，
+        // 否则整屏可能还挂着框选阶段的十字矩形，反过来把我们推的箭头压掉。
+        host.window?.resetCursorRects()
+        host.syncLockedCursor()
         return true
     }
 
@@ -325,6 +350,8 @@ public final class InPlaceAnnotator {
         let selected = document.selectedAnnotation
         let activeTool = selected?.tool ?? canvas.tool
         bar.refresh(tool: activeTool, canUndo: document.canUndo, canRedo: document.canRedo)
+        // 工具可能从工具条、属性条或键盘快捷键改过来，统一在这里记一次
+        Self.remember(tool: canvas.tool)
 
         guard let properties else { return }
         let wasHidden = properties.isHidden

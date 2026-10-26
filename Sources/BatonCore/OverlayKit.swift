@@ -527,7 +527,12 @@ final class OverlayView: NSView {
     }
 
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: lockedSelection == nil ? .crosshair : .arrow)
+        // 锁定后的整屏光标不交给光标矩形：AppKit 只在跨过矩形边界那一刻重设，
+        // 从框选阶段的十字切过来时不会自动换成箭头，会一直卡着十字。
+        // 改由 `syncLockedCursor()` 在每次鼠标移动时自己推。
+        if lockedSelection == nil {
+            addCursorRect(bounds, cursor: .crosshair)
+        }
 
         // 选区手柄骑在边界上，朝外那半边落在画布外面，画布自己的 cursor rect 管不到，
         // 这里补一圈。后加的先命中，所以能压住上面的整屏箭头。
@@ -557,8 +562,33 @@ final class OverlayView: NSView {
         return canvas
     }
 
-    // MARK: - 坐标
+    // MARK: - 光标
 
+    /// 锁定选区后该亮什么光标：框内归画布（十字 / 文本 I 形 / 抓手），
+    /// 框外和两条工具条上是普通箭头。
+    ///
+    /// 光标矩形只在「跨过矩形边界」那一刻生效。框选阶段整屏都是十字，锁定后
+    /// 宿主的光标矩形虽然改成了箭头，但鼠标既没动也没跨边界，十字就一直挂着——
+    /// 表现就是「在框外、工具条上还是十字，得先进框再出来才恢复」。
+    /// 所以这里每次鼠标移动自己推一次，不指望 AppKit 的增量更新。
+    func syncLockedCursor() {
+        guard lockedSelection != nil,
+              let canvas = annotationCanvas as? AnnotateCanvasView,
+              let window else { return }
+        let point = convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        let inCanvas = canvas.convert(point, from: self)
+        if canvas.bounds.contains(inCanvas) {
+            canvas.currentCursor.set()
+        } else if SelectionGeometry.anchor(at: inCanvas, in: canvas.bounds,
+                                           tolerance: SelectionChrome.reach) != nil {
+            // 手柄骑在边界上，形状交给它的光标矩形（八向缩放箭头）
+            return
+        } else {
+            NSCursor.arrow.set()
+        }
+    }
+
+    // MARK: - 坐标
     /// CG 全局坐标 → 本视图坐标（Cocoa，左下原点）
     private func localRect(fromGlobal global: CGRect) -> CGRect {
         guard let window else { return .zero }
@@ -741,6 +771,8 @@ final class OverlayView: NSView {
     override func mouseMoved(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         if mode == .area {
+            // 编辑态：光标不跟着 AppKit 的增量更新走，按当前位置自己算
+            if lockedSelection != nil { syncLockedCursor() }
             // 放大镜由 displayLink 每帧刷新；这里只在帧驱动不可用时兜底，
             // 避免同一个鼠标位置被事件和 vsync 各刷一遍。
             if frameLink == nil { updateMagnifier(at: point) }

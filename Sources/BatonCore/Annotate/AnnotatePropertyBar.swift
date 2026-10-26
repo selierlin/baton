@@ -70,6 +70,11 @@ final class AnnotatePropertyBarView: NSView {
     /// 事件到属性条为止，不再往上走。
     override func mouseUp(with event: NSEvent) {}
 
+    /// 同主工具条：鼠标移上来要回到普通箭头，别带着画布的十字。
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .arrow)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
                                 xRadius: 5, yRadius: 5)
