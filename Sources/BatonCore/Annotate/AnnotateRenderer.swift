@@ -271,7 +271,8 @@ public enum AnnotateRenderer {
 
     /// Longshot 的两种箭头：
     /// - 平箭头（flatArrow）：等宽线杆 + 三角头，头底边是直的
-    /// - 内凹箭头（sinkArrow）：等宽线换成「细 → 粗」的楔形杆，头底边再向内切一个 V 形口
+    /// - 内凹箭头（sinkArrow）：整条就是一支「楔形」，尾巴从一点墨张开到箭头，
+    ///   头底边再向内切一个 V 形口
     private static func drawArrow(_ context: CGContext, start: CGPoint, end: CGPoint,
                                   width: CGFloat, sinkTail: Bool, dashed: Bool = false) {
         if dashed {
@@ -287,31 +288,32 @@ public enum AnnotateRenderer {
         let nx = -uy
         let ny = ux
 
-        // 几何来自 Longshot 的 drawFlatArrowParam / drawSinkArrowParam：
-        // lineThick 4pt、triangleAngle 45°、baseTriangleHeight 10pt、thicknessAngle 23°。
-        // baseTriangleHeight 恰好是 lineThick 的 2.5 倍，所以按线宽等比缩放即可。
-        let headLength = min(width * 2.5, length * 0.95)
-        // triangleAngle 是「箭头中线到侧边」的半角（45°），所以半宽 = 头长 × tan45° = 头长，
-        // 整个头的张角是 90°——和 Assets.car 里 sinkArrow 图标的比例一致（头宽约为线宽的 5 倍）。
-        let half = headLength
-        let base = CGPoint(x: end.x - ux * headLength, y: end.y - uy * headLength)
-
         // 线杆端口用平头，否则端点会从三角底边两侧支出来
         context.setLineCap(.butt)
         context.setLineJoin(.miter)
 
         if sinkTail {
-            // 第三个变体（sinkArrow）：箭杆是「细 → 粗」的楔形，从尾端细口一路张到箭头，
-            // 箭头底边再向内切一个 V 形口，杆从缺口里探进去，和两侧倒刺之间留一道细缝。
-            // 杆最宽处不到头的一半：图标里杆宽约是头宽的 40%，再宽就成实心块了
-            let bodyHalf = half * 0.45
-            // 凹口深浅：按图标量出来约是头长的 1/3，比 tan(23°) 浅一点，倒刺才不会细成锯齿
-            let notchDepth = half * 0.34
+            // 内凹箭头是「一整支楔形」，头的大小跟着箭头长度走，不是跟着线宽走。
+            // 比例照 Longshot 的成品量出来：头长 ≈ 0.33 × 箭头长度、头长:头半宽 ≈ 2.35
+            // （尖端约 23° 半角）、杆末半宽 ≈ 0.39 × 头半宽、凹口深 ≈ 0.35 × 头长。
+            // 之前按线宽算头（头长只有 2.5 × 线宽）、半宽又取成头长（90° 张角），
+            // 几百点的长箭头上就是杆端糊了一小坨，所以难看。
+            var half = max(length * 0.139, width * 1.47)
+            var headLength = half * 2.35
+            // 极短的箭头：头不能比整条还长，按同一比例缩回去，形状才不会走样
+            if headLength > length * 0.92 {
+                let scale = (length * 0.92) / headLength
+                headLength *= scale
+                half *= scale
+            }
+            let base = CGPoint(x: end.x - ux * headLength, y: end.y - uy * headLength)
+            // 杆最宽处不到头的一半：再宽就成实心块了
+            let bodyHalf = half * 0.39
+            let notchDepth = headLength * 0.35
             let notch = CGPoint(x: base.x + ux * notchDepth, y: base.y + uy * notchDepth)
 
             // 尾部从一点墨开始，沿杆线性张开到靠头处最粗——就是 Longshot 那种
             // 「由细到粗」的锥形杆，尾端没有平头截面。
-            // 楔形杆：尾尖 → 凹口两侧，一直伸进箭头里
             context.beginPath()
             context.move(to: start)
             context.addLine(to: CGPoint(x: notch.x + nx * bodyHalf, y: notch.y + ny * bodyHalf))
@@ -319,7 +321,7 @@ public enum AnnotateRenderer {
             context.closePath()
             context.fillPath()
 
-            // 箭头：底边中间向内切一个 V 形口，口子比杆宽，杆和两侧倒刺之间才会留出细缝
+            // 箭头：底边中间向内切一个 V 形口，杆从缺口里探进去
             context.beginPath()
             context.move(to: end)
             context.addLine(to: CGPoint(x: base.x + nx * half, y: base.y + ny * half))
@@ -328,6 +330,11 @@ public enum AnnotateRenderer {
             context.closePath()
             context.fillPath()
         } else {
+            // 平箭头：三角头按线宽算（Longshot 的 flatArrow 就是这样，头和线一个量级）
+            let headLength = min(width * 2.5, length * 0.95)
+            let half = headLength
+            let base = CGPoint(x: end.x - ux * headLength, y: end.y - uy * headLength)
+
             context.beginPath()
             context.move(to: end)
             context.addLine(to: CGPoint(x: base.x + nx * half, y: base.y + ny * half))
