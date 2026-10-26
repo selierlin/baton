@@ -48,34 +48,45 @@ public enum SelectionChrome {
 extension SelectionAnchor {
     /// 拖这个手柄时的光标。
     ///
-    /// 用系统的框体缩放光标（`NSCursor.frameResize`）：角上是斜向双箭头、边上是单向
-    /// 双箭头，和「只能横向拖」区分得开。画布和覆盖层都要用，所以放在这里共用。
+    /// Longshot 用的是系统老式的双向箭头（`resizeLeftRightCursor` /
+    /// `resizeUpDownCursor`），四角靠把竖箭头转 ±45° 现造一个。
+    /// 不用 `NSCursor.frameResize`——那是「窗口框体」光标，带一圈方块轮廓、
+    /// 切换时还有过渡动画，观感上比老式箭头钝，这也是 Longshot 看着更跟手的原因之一。
     @MainActor
     public var cursor: NSCursor { SelectionCursors.map[self] ?? .crosshair }
 }
 
-/// 光标实例缓存。`frameResize` 每调一次就新建一个对象，而光标是在
-/// `mouseMoved` 里取的——不缓存等于每个鼠标事件都造一个。
+/// 光标实例缓存。光标是在 `mouseMoved` 里取的，不缓存等于每个鼠标事件都造一个。
 @MainActor
 private enum SelectionCursors {
-    static let map: [SelectionAnchor: NSCursor] = Dictionary(
-        uniqueKeysWithValues: SelectionAnchor.allCases.map {
-            ($0, NSCursor.frameResize(position: $0.resizePosition, directions: .all))
-        })
-}
+    static let map: [SelectionAnchor: NSCursor] = {
+        let horizontal = NSCursor.resizeLeftRight
+        let vertical = NSCursor.resizeUpDown
+        let falling = rotated(vertical, degrees: -45)   // "↘↖" 方向
+        let rising = rotated(vertical, degrees: 45)     // "↗↙" 方向
+        return [
+            .left: horizontal, .right: horizontal,
+            .top: vertical, .bottom: vertical,
+            .topLeft: falling, .bottomRight: falling,
+            .topRight: rising, .bottomLeft: rising,
+        ]
+    }()
 
-private extension SelectionAnchor {
-    /// 手柄 → 系统「框体的哪个部位」。
-    var resizePosition: NSCursor.FrameResizePosition {
-        switch self {
-        case .topLeft: return .topLeft
-        case .top: return .top
-        case .topRight: return .topRight
-        case .right: return .right
-        case .bottomRight: return .bottomRight
-        case .bottom: return .bottom
-        case .bottomLeft: return .bottomLeft
-        case .left: return .left
+    /// 把竖箭头转成斜向。系统没有公开的斜向缩放光标，只能自己转一张；
+    /// 热点沿用原光标的，转了以后偏几个点，肉眼看不出来。
+    private static func rotated(_ base: NSCursor, degrees: CGFloat) -> NSCursor {
+        let source = base.image
+        let size = source.size
+        let image = NSImage(size: size)
+        image.lockFocus()
+        if let ctx = NSGraphicsContext.current?.cgContext {
+            ctx.translateBy(x: size.width / 2, y: size.height / 2)
+            ctx.rotate(by: degrees * .pi / 180)
+            ctx.translateBy(x: -size.width / 2, y: -size.height / 2)
         }
+        source.draw(in: NSRect(origin: .zero, size: size))
+        image.unlockFocus()
+        image.isTemplate = source.isTemplate
+        return NSCursor(image: image, hotSpot: base.hotSpot)
     }
 }

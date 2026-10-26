@@ -634,6 +634,12 @@ final class OverlayView: NSView {
         guard lockedSelection != nil,
               let canvas = annotationCanvas as? AnnotateCanvasView,
               let window else { return }
+        // Longshot 每次更新光标前都会看一眼 `NSApp.isActive`，不活跃就抢回来。
+        // 进程不在前台时 `set()` 会被系统直接丢掉，光标就卡在上一个形状了。
+        if !NSApp.isActive {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        }
         let point = convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
         let inCanvas = canvas.convert(point, from: self)
         if canvas.bounds.contains(inCanvas) {
