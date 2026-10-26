@@ -676,6 +676,14 @@ final class OverlayView: NSView {
         }
     }
 
+    /// 框外按下/拖动：把 `anchor` 指着的那条边挪到指针位置。
+    /// 每次都拿起手时的 `origin` 重算，避免浮条重排、尺寸被钳制之后误差累积。
+    private func resizeOutsideDrag(_ anchor: SelectionAnchor, origin: CGRect, to point: CGPoint) {
+        let target = SelectionGeometry.resized(origin, anchor: anchor, to: point,
+                                               limit: captured.display.screenFrame)
+        if target != lockedSelection { onSelectionResize?(target) }
+    }
+
     // MARK: - 坐标
     /// CG 全局坐标 → 本视图坐标（Cocoa，左下原点）
     private func localRect(fromGlobal global: CGRect) -> CGRect {
@@ -776,10 +784,13 @@ final class OverlayView: NSView {
     override func mouseDown(with event: NSEvent) {
         // 编辑态：选区已锁定，画布自己收事件，遮罩上的点击不重开框选
         if lockedSelection != nil {
-            // 框外按住 = 拖那条边（Longshot 的行为：光标已经是 ↔/↕，按下去就能扩）
+            // 框外按下 = 把那条边挪到指针上。Longshot 是点一下就扩（不必按住拖），
+            // 按住继续移动则是连续改尺寸，所以按下这一刻就得算一次，
+            // 只记下起手状态等 mouseDragged 的话单击会毫无反应。
             let local = convert(event.locationInWindow, from: nil)
             if let anchor = outsideResizeAnchor(at: local), let origin = lockedSelection {
                 outsideDrag = (anchor, origin)
+                resizeOutsideDrag(anchor, origin: origin, to: globalPoint(for: event))
             }
             return
         }
@@ -815,10 +826,7 @@ final class OverlayView: NSView {
     override func mouseDragged(with event: NSEvent) {
         // 框外拖边：那条边跟到指针上，对边不动
         if let drag = outsideDrag {
-            let target = SelectionGeometry.resized(drag.origin, anchor: drag.anchor,
-                                                   to: globalPoint(for: event),
-                                                   limit: captured.display.screenFrame)
-            if target != lockedSelection { onSelectionResize?(target) }
+            resizeOutsideDrag(drag.anchor, origin: drag.origin, to: globalPoint(for: event))
             return
         }
         guard mode == .area else { return }
