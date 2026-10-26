@@ -44,6 +44,17 @@ final class AnnotateBarView: NSView {
     static let iconColor = BarPalette.icon
     static let hoverBackground = BarPalette.hover
 
+    /// 浮条压在截图内容上，只靠 1pt 描边的话浅色底图里几乎分不出边界。
+    /// 补一层柔和投影；不带 offset —— 条里的视图都是 isFlipped 的，
+    /// 带方向的 offset 在翻转过的图层里会指向反方向。
+    static func applyFloatingShadow(to view: NSView) {
+        view.wantsLayer = true
+        view.layer?.shadowColor = NSColor.black.cgColor
+        view.layer?.shadowOpacity = 0.14
+        view.layer?.shadowRadius = 6
+        view.layer?.shadowOffset = .zero
+    }
+
     /// 每个槽位的一组工具。数组顺序 = 右键菜单顺序（照 Longshot 的
     /// `snipToolbarItemsRawValue`），默认显示项由 `defaultTool(for:)` 决定。
     static let groups: [[AnnotateTool]] = [
@@ -126,6 +137,7 @@ final class AnnotateBarView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
+        Self.applyFloatingShadow(to: self)
         // 不锁外观：Longshot 的条子跟着系统走，浅色系统下是白底黑图标
 
         scroll.drawsBackground = false

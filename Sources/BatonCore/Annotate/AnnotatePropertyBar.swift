@@ -55,7 +55,7 @@ final class AnnotatePropertyBarView: NSView {
     init() {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        wantsLayer = true
+        AnnotateBarView.applyFloatingShadow(to: self)
         addSubview(content)
         build(for: .rectangle, state: State(tool: .rectangle, style: AnnotateStyle(), number: 1))
     }
@@ -158,7 +158,7 @@ final class AnnotatePropertyBarView: NSView {
                                             selectedImage: PropertyIcon.tool(tool).image(color: BarPalette.accent),
                                             tooltip: tool.title)
             }
-            let segment = PropertySegmentControl(items: items, itemWidth: 32)
+            let segment = PropertySegmentControl(items: items, itemWidth: 32, label: "变体")
             segment.selectionStyle = .tint
             segment.selectedIndex = group.firstIndex(of: tool) ?? 0
             segment.onSelect = { [weak self] index in
@@ -200,9 +200,10 @@ final class AnnotatePropertyBarView: NSView {
 
         case .mosaic, .mosaicEllipse, .mosaicPencil:
             let patterns = MosaicPattern.allCases
-            addSegment(items: patterns.count,
+            addSegment(titles: patterns.map { $0.title },
                        images: patterns.map { PropertyIcon.mosaic($0).image(color: BarPalette.chipIcon) },
                        selected: patterns.firstIndex(of: state.style.mosaicPattern) ?? 0,
+                       label: "纹理",
                        provider: { patterns.firstIndex(of: $0.style.mosaicPattern) ?? 0 }) { [weak self] index in
                 self?.onChange?(.mosaicPattern(patterns[index]))
             }
@@ -249,9 +250,10 @@ final class AnnotatePropertyBarView: NSView {
 
         case .markerPen:
             let caps = MarkerCap.allCases
-            addSegment(items: caps.count,
+            addSegment(titles: caps.map { $0.title },
                        images: caps.map { PropertyIcon.cap($0).image(color: BarPalette.chipIcon) },
                        selected: caps.firstIndex(of: state.style.markerCap) ?? 0,
+                       label: "笔头",
                        provider: { caps.firstIndex(of: $0.style.markerCap) ?? 0 }) { [weak self] index in
                 self?.onChange?(.markerCap(caps[index]))
             }
@@ -267,9 +269,10 @@ final class AnnotatePropertyBarView: NSView {
 
         case .counter:
             let shapes = CounterShape.allCases
-            addSegment(items: shapes.count,
+            addSegment(titles: shapes.map { $0.title },
                        images: shapes.map { PropertyIcon.counter($0).image(color: BarPalette.chipIcon) },
                        selected: shapes.firstIndex(of: state.style.counterShape) ?? 0,
+                       label: "序号样式",
                        provider: { shapes.firstIndex(of: $0.style.counterShape) ?? 0 }) { [weak self] index in
                 self?.onChange?(.counterShape(shapes[index]))
             }
@@ -286,7 +289,8 @@ final class AnnotatePropertyBarView: NSView {
 
         case .text:
             let popup = PropertyPopupButton(title: Self.fontTitle(state.style.fontName),
-                                            options: Self.fonts.map { Self.fontTitle($0) })
+                                            options: Self.fonts.map { Self.fontTitle($0) },
+                                            label: "字体")
             popup.selectionProvider = { Self.fonts.firstIndex(of: $0.style.fontName) ?? 0 }
             popup.onSelect = { [weak self] index in
                 guard index < Self.fonts.count else { return }
@@ -299,7 +303,8 @@ final class AnnotatePropertyBarView: NSView {
             }
             let styles = TextMarkStyle.allCases
             let stylePopup = PropertyPopupButton(title: state.style.textMarkStyle.title,
-                                                 options: styles.map { $0.title })
+                                                 options: styles.map { $0.title },
+                                                 label: "文字样式")
             stylePopup.selectionProvider = { styles.firstIndex(of: $0.style.textMarkStyle) ?? 0 }
             stylePopup.onSelect = { [weak self] index in
                 guard index < styles.count else { return }
@@ -330,9 +335,10 @@ final class AnnotatePropertyBarView: NSView {
 
     private func addShapeStyleSegment(_ state: State) {
         let styles = ShapeDrawStyle.allCases
-        addSegment(items: styles.count,
+        addSegment(titles: styles.map { $0.title },
                    images: styles.map { PropertyIcon.shape($0).image(color: BarPalette.chipIcon) },
                    selected: styles.firstIndex(of: state.style.shapeDrawStyle) ?? 1,
+                   label: "绘制样式",
                    provider: { styles.firstIndex(of: $0.style.shapeDrawStyle) ?? 1 }) { [weak self] index in
             self?.onChange?(.shapeDrawStyle(styles[index]))
         }
@@ -340,32 +346,35 @@ final class AnnotatePropertyBarView: NSView {
 
     private func addLinePatternSegment(_ state: State) {
         let patterns = LinePattern.allCases
-        addSegment(items: patterns.count,
+        addSegment(titles: patterns.map { $0.title },
                    images: patterns.map { PropertyIcon.line($0).image(color: BarPalette.chipIcon) },
                    selected: patterns.firstIndex(of: state.style.linePattern) ?? 0,
+                   label: "线型",
                    provider: { patterns.firstIndex(of: $0.style.linePattern) ?? 0 }) { [weak self] index in
             self?.onChange?(.linePattern(patterns[index]))
         }
     }
 
-    private func addSegment(items: Int, images: [NSImage], selected: Int,
+    private func addSegment(titles: [String], images: [NSImage], selected: Int, label: String,
                             provider: ((State) -> Int)? = nil,
                             onSelect: @escaping (Int) -> Void) {
-        let segment = PropertySegmentControl(
-            items: images.map { PropertySegmentControl.Item(image: $0, tooltip: nil) },
-            itemWidth: 32
-        )
+        let items = zip(titles, images).map {
+            // 每个格子的名字既是悬停提示也是读屏文本 —— 光看图确实认不出
+            // 「斜线 / 晶体 / 气球」这些样式。
+            PropertySegmentControl.Item(image: $0.1, tooltip: $0.0)
+        }
+        let segment = PropertySegmentControl(items: items, itemWidth: 32, label: label)
         segment.selectedIndex = selected
         segment.selectionProvider = provider
         segment.onSelect = onSelect
-        add(segment, width: CGFloat(items) * 32)
+        add(segment, width: CGFloat(items.count) * 32)
     }
 
     private func addSlider(min: CGFloat, max: CGFloat, value: CGFloat,
                            metric: PropertySlider.Metric = .lineWidth,
                            tooltip: String? = nil,
                            onChange: @escaping (CGFloat) -> Void) {
-        let slider = PropertySlider()
+        let slider = PropertySlider(label: tooltip ?? "数值")
         slider.minValue = min
         slider.maxValue = max
         slider.metric = metric
@@ -406,10 +415,127 @@ final class AnnotatePropertyBarView: NSView {
     }
 }
 
+// MARK: - 自绘控件的公共底子
+
+/// 属性条里所有自绘控件共用的行为。
+///
+/// - 悬停 80ms 淡入：系统控件的悬停都是渐显，瞬切会显得毛糙。
+/// - 点一下接管键盘（←/→ 调值），没处理的键原样还给原来的响应者 ——
+///   否则点过滑杆之后 Esc / ⌘Z 这些截图快捷键就失灵了。
+@MainActor
+class PropertyControl: NSView {
+    /// 悬停高亮的不透明度，0…1。子类按它混合 `BarPalette.hover`。
+    @objc dynamic var hoverAlpha: CGFloat = 0 {
+        didSet { needsDisplay = true }
+    }
+    /// 鼠标停在第几格（不分格的控件恒为 0），子类据此决定高亮画在哪
+    private(set) var hoveredIndex: Int?
+
+    /// 接管键盘前谁是第一响应者，多半是画布
+    private weak var keyFallback: NSResponder?
+    private var hoverArea: NSTrackingArea?
+
+    override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { true }
+
+    override class func defaultAnimation(forKey key: NSAnimatablePropertyKey) -> Any? {
+        // animator() 只认注册过的属性，不写这个 `hoverAlpha` 会直接跳到终值
+        key == "hoverAlpha" ? CABasicAnimation() : super.defaultAnimation(forKey: key)
+    }
+
+    /// 子类返回鼠标所在的格子；返回 nil 表示不亮
+    func hoverIndex(at point: NSPoint) -> Int? {
+        bounds.contains(point) ? 0 : nil
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(rect: .zero,
+                                  options: [.mouseEnteredAndExited, .mouseMoved,
+                                            .activeAlways, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { updateHover(event) }
+    override func mouseMoved(with event: NSEvent) { updateHover(event) }
+
+    override func mouseExited(with event: NSEvent) {
+        hoveredIndex = nil
+        fadeHover(0)
+    }
+
+    private func updateHover(_ event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let index = hoverIndex(at: point)
+        if index != hoveredIndex {
+            hoveredIndex = index
+            needsDisplay = true
+        }
+        fadeHover(index == nil ? 0 : 1)
+    }
+
+    private func fadeHover(_ target: CGFloat) {
+        guard hoverAlpha != target else { return }
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            hoverAlpha = target
+            return
+        }
+        wantsLayer = true
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.08
+            context.allowsImplicitAnimation = true
+            animator().hoverAlpha = target
+        }
+    }
+
+    // MARK: 键盘
+
+    override func becomeFirstResponder() -> Bool {
+        let current = window?.firstResponder
+        if current !== self { keyFallback = current }
+        needsDisplay = true
+        return super.becomeFirstResponder()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        needsDisplay = true
+        return super.resignFirstResponder()
+    }
+
+    /// 鼠标按下时把焦点拿过来，方向键才有地方落
+    func takeFocus() {
+        guard window?.firstResponder !== self else { return }
+        window?.makeFirstResponder(self)
+    }
+
+    /// 自己没吃的键交回画布（顺带把焦点也还回去）
+    func forwardKey(_ event: NSEvent) {
+        if let fallback = keyFallback {
+            window?.makeFirstResponder(fallback)
+            fallback.keyDown(with: event)
+        } else {
+            nextResponder?.keyDown(with: event)
+        }
+    }
+
+    /// 有焦点时给当前格描一圈强调色
+    func drawFocusRing(in rect: NSRect) {
+        guard window?.firstResponder === self else { return }
+        BarPalette.accent.setStroke()
+        let path = NSBezierPath(roundedRect: rect.insetBy(dx: -1.5, dy: -1.5),
+                                xRadius: 8, yRadius: 8)
+        path.lineWidth = 2
+        path.stroke()
+    }
+}
+
 // MARK: - 分段控件
 
 @MainActor
-final class PropertySegmentControl: NSView {
+final class PropertySegmentControl: PropertyControl {
     /// 选中态有两种画法：Longshot 的「变体切换」是把图标染成蓝色，
     /// 其它分段（绘制样式、线型）是给一个浅灰圆角底。
     enum SelectionStyle {
@@ -420,6 +546,7 @@ final class PropertySegmentControl: NSView {
     struct Item {
         var image: NSImage?
         var selectedImage: NSImage?
+        /// 同时当悬停提示和 VoiceOver 的格子名用
         var tooltip: String?
     }
 
@@ -427,22 +554,66 @@ final class PropertySegmentControl: NSView {
     var onSelect: ((Int) -> Void)?
     var selectionProvider: ((AnnotatePropertyBarView.State) -> Int)?
     var selectedIndex = 0 {
-        didSet { needsDisplay = true }
+        didSet {
+            needsDisplay = true
+            setAccessibilityValue(currentTitle)
+        }
     }
 
     private let items: [Item]
     private let itemWidth: CGFloat
+    private let label: String
+    private var toolTipsRegistered = false
 
-    init(items: [Item], itemWidth: CGFloat) {
+    private var currentTitle: String {
+        items.indices.contains(selectedIndex) ? (items[selectedIndex].tooltip ?? "") : ""
+    }
+
+    private func cellRect(at index: Int) -> NSRect {
+        let slotHeight: CGFloat = 22
+        return NSRect(x: CGFloat(index) * itemWidth,
+                      y: (bounds.height - slotHeight) / 2,
+                      width: itemWidth, height: slotHeight)
+    }
+
+    init(items: [Item], itemWidth: CGFloat, label: String = "") {
         self.items = items
         self.itemWidth = itemWidth
+        self.label = label
         super.init(frame: .zero)
+        setAccessibilityRole(.radioGroup)
+        setAccessibilityLabel(label)
+        setAccessibilityHelp("左右方向键切换")
+        setAccessibilityValue(currentTitle)
+    }
+
+    /// 提示区域要在挂进窗口之后注册：`init` 里视图还没有 window，
+    /// `addToolTip` 登记的矩形不会被 AppKit 收下，鼠标停上去什么都不弹。
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil, !toolTipsRegistered else { return }
+        toolTipsRegistered = true
+        for (index, item) in items.enumerated() where item.tooltip != nil {
+            // 格子宽度固定，提示区域可以一次算好
+            addToolTip(NSRect(x: CGFloat(index) * itemWidth, y: 0,
+                              width: itemWidth, height: 40),
+                       owner: self, userData: nil)
+        }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override var isFlipped: Bool { true }
+    override func hoverIndex(at point: NSPoint) -> Int? {
+        guard bounds.contains(point) else { return nil }
+        return min(max(Int(point.x / itemWidth), 0), items.count - 1)
+    }
+
+    @objc func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag,
+                    point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
+        let index = min(max(Int(point.x / itemWidth), 0), items.count - 1)
+        return items[index].tooltip ?? ""
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         // Longshot 的分段是「一条浅槽 + 选中格子里一块更亮的块」，格子之间用
@@ -452,13 +623,18 @@ final class PropertySegmentControl: NSView {
                           width: bounds.width, height: slotHeight)
         if selectionStyle == .chip {
             BarPalette.controlRaised.setFill()
-            NSBezierPath(roundedRect: slot, xRadius: 7, yRadius: 7).fill()
+            NSBezierPath(roundedRect: slot, xRadius: 6, yRadius: 6).fill()
         }
 
         for (index, item) in items.enumerated() {
             let column = NSRect(x: CGFloat(index) * itemWidth, y: slot.minY,
                                 width: itemWidth, height: slotHeight)
             let selected = index == selectedIndex
+            // 悬停：没选中的格子垫一层淡底，选中格本身就是高亮，不再叠
+            if !selected, hoveredIndex == index, hoverAlpha > 0 {
+                BarPalette.hover.withAlphaComponent(hoverAlpha).setFill()
+                NSBezierPath(roundedRect: column, xRadius: 6, yRadius: 6).fill()
+            }
             if selected, selectionStyle == .chip {
                 BarPalette.segmentedSelected.setFill()
                 NSBezierPath(roundedRect: column, xRadius: 6, yRadius: 6).fill()
@@ -481,14 +657,31 @@ final class PropertySegmentControl: NSView {
                            respectFlipped: true, hints: nil)
             }
         }
+
+        drawFocusRing(in: cellRect(at: selectedIndex))
     }
 
     override func mouseDown(with event: NSEvent) {
+        takeFocus()
         let point = convert(event.locationInWindow, from: nil)
         let index = min(max(Int(point.x / itemWidth), 0), items.count - 1)
         guard index != selectedIndex else { return }
         selectedIndex = index
         onSelect?(index)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 123, 124: // ← →
+            let step = event.keyCode == 123 ? -1 : 1
+            let index = min(max(selectedIndex + step, 0), items.count - 1)
+            if index != selectedIndex {
+                selectedIndex = index
+                onSelect?(index)
+            }
+        default:
+            forwardKey(event)
+        }
     }
 
     func apply(_ state: AnnotatePropertyBarView.State) {
@@ -515,7 +708,7 @@ final class PropertySeparator: NSView {
 // MARK: - 滑杆
 
 @MainActor
-final class PropertySlider: NSView {
+final class PropertySlider: PropertyControl {
     enum Metric {
         case lineWidth, fontSize, opacity, fillAlpha, cornerRadius, mosaicBlock, counterScale
     }
@@ -524,14 +717,43 @@ final class PropertySlider: NSView {
     var minValue: CGFloat = 0
     var maxValue: CGFloat = 1
     var value: CGFloat = 1 {
-        didSet { needsDisplay = true }
+        didSet {
+            needsDisplay = true
+            setAccessibilityValue(NSNumber(value: Double(value)))
+        }
     }
     var showsFill = true
     var onChange: ((CGFloat) -> Void)?
 
     private var dragging = false
 
-    override var isFlipped: Bool { true }
+    private static let inset: CGFloat = 10
+
+    /// 方向键一步走量程的 1/40：滑杆只有 80pt 宽，一格一跳太粗
+    private var keyStep: CGFloat { (maxValue - minValue) / 40 }
+
+    init(label: String) {
+        super.init(frame: .zero)
+        setAccessibilityRole(.slider)
+        setAccessibilityLabel(label)
+        setAccessibilityHelp("左右方向键微调")
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func accessibilityMinValue() -> Any? { NSNumber(value: Double(minValue)) }
+    override func accessibilityMaxValue() -> Any? { NSNumber(value: Double(maxValue)) }
+
+    override func accessibilityPerformIncrement() -> Bool {
+        bump(by: keyStep)
+        return true
+    }
+
+    override func accessibilityPerformDecrement() -> Bool {
+        bump(by: -keyStep)
+        return true
+    }
 
     func apply(_ state: AnnotatePropertyBarView.State) {
         guard !dragging else { return }
@@ -548,9 +770,20 @@ final class PropertySlider: NSView {
         if abs(target - value) > 0.001 { value = target }
     }
 
+    private var track: NSRect {
+        NSRect(x: Self.inset, y: bounds.midY - 2,
+               width: bounds.width - Self.inset * 2, height: 4)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
-        let inset: CGFloat = 10
-        let track = NSRect(x: inset, y: bounds.midY - 2, width: bounds.width - inset * 2, height: 4)
+        let track = track
+        // 悬停只铺一圈比槽大一点的淡底，不动槽和钮，免得看着像在拖
+        if hoverAlpha > 0 {
+            BarPalette.hover.withAlphaComponent(hoverAlpha * 0.55).setFill()
+            NSBezierPath(roundedRect: track.insetBy(dx: -4, dy: -7),
+                         xRadius: 8, yRadius: 8).fill()
+        }
+
         BarPalette.control.setFill()
         NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2).fill()
 
@@ -571,9 +804,14 @@ final class PropertySlider: NSView {
         NSColor.black.withAlphaComponent(0.12).setStroke()
         dot.lineWidth = 1
         dot.stroke()
+
+        if window?.firstResponder === self {
+            drawFocusRing(in: knob.insetBy(dx: -2, dy: -2))
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
+        takeFocus()
         dragging = true
         update(with: event)
     }
@@ -587,10 +825,24 @@ final class PropertySlider: NSView {
         dragging = false
     }
 
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 123: bump(by: -keyStep)
+        case 124: bump(by: keyStep)
+        default: forwardKey(event)
+        }
+    }
+
+    private func bump(by delta: CGFloat) {
+        let next = min(max(value + delta, minValue), maxValue)
+        guard abs(next - value) > 0.0001 else { return }
+        value = next
+        onChange?(next)
+    }
+
     private func update(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        let inset: CGFloat = 10
-        let ratio = max(0, min(1, (point.x - inset) / max(bounds.width - inset * 2, 1)))
+        let ratio = max(0, min(1, (point.x - Self.inset) / max(bounds.width - Self.inset * 2, 1)))
         value = minValue + ratio * (maxValue - minValue)
         onChange?(value)
     }
@@ -622,9 +874,11 @@ final class PropertyNumberField: NSView, NSTextFieldDelegate {
         field.alignment = .center
         field.focusRingType = .none
         field.wantsLayer = true
-        field.layer?.cornerRadius = 4
+        field.layer?.cornerRadius = 6
         field.layer?.borderWidth = 1
         field.layer?.borderColor = AnnotateBarView.borderColor.cgColor
+        field.setAccessibilityLabel("序号")
+        field.setAccessibilityHelp("输入 1–999 的数字")
         field.target = self
         field.action = #selector(commit)
         field.delegate = self
@@ -656,7 +910,7 @@ final class PropertyNumberField: NSView, NSTextFieldDelegate {
 // MARK: - 颜色条
 
 @MainActor
-final class PropertyColorStrip: NSView {
+final class PropertyColorStrip: PropertyControl {
     /// 4 格 × 32pt，和 Longshot 的 `PPColorListSegmentedControl` 一样：
     /// 三个预置色 + 一格自定义色，装在同一个胶囊里，格子之间只有 1pt 刻度。
     static let preferredWidth: CGFloat = cellWidth * CGFloat(presets.count + 1)
@@ -676,6 +930,7 @@ final class PropertyColorStrip: NSView {
                 customColor = current
             }
             needsDisplay = true
+            setAccessibilityValue(hex)
         }
     }
 
@@ -683,7 +938,23 @@ final class PropertyColorStrip: NSView {
     private var customColor: AnnotateColor = .blue
     private var popover: NSPopover?
 
-    override var isFlipped: Bool { true }
+    private var hex: String {
+        String(format: "#%02X%02X%02X",
+               Int((current.red * 255).rounded()),
+               Int((current.green * 255).rounded()),
+               Int((current.blue * 255).rounded()))
+    }
+
+    init() {
+        super.init(frame: .zero)
+        setAccessibilityRole(.colorWell)
+        setAccessibilityLabel("颜色")
+        setAccessibilityHelp("左右方向键切换预置色")
+        setAccessibilityValue(hex)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// 颜色条被拆掉（退出编辑）或被重建（切工具）时，把色板放回原层级。
     /// 它此刻被抬到了覆盖层之上，不收回来会一直悬在所有窗口最前面。
@@ -691,6 +962,11 @@ final class PropertyColorStrip: NSView {
         super.viewDidMoveToWindow()
         guard window == nil else { return }
         ColorPanelBridge.shared.demote()
+    }
+
+    override func hoverIndex(at point: NSPoint) -> Int? {
+        guard bounds.contains(point) else { return nil }
+        return min(max(Int(point.x / Self.cellWidth), 0), Self.customIndex)
     }
 
     private var capsule: NSRect {
@@ -718,6 +994,12 @@ final class PropertyColorStrip: NSView {
         NSBezierPath(roundedRect: capsule, xRadius: capsule.height / 2,
                      yRadius: capsule.height / 2).fill()
 
+        // 悬停：没选中的格子垫一层淡底
+        if hoverAlpha > 0, let hovered = hoveredIndex, hovered != selectedIndex {
+            BarPalette.hover.withAlphaComponent(hoverAlpha).setFill()
+            NSBezierPath(roundedRect: cellRect(at: hovered), xRadius: 6, yRadius: 6).fill()
+        }
+
         // 选中的格子垫一块更亮的底（不描边，Longshot 的选中就是这个观感）
         let selected = selectedIndex
         BarPalette.segmentedSelected.setFill()
@@ -744,6 +1026,8 @@ final class PropertyColorStrip: NSView {
         triangle.close()
         NSColor.black.setFill()
         triangle.fill()
+
+        drawFocusRing(in: cellRect(at: selected))
     }
 
     private func fillDot(at index: Int, color: AnnotateColor) {
@@ -753,12 +1037,25 @@ final class PropertyColorStrip: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        takeFocus()
         let point = convert(event.locationInWindow, from: nil)
         for (index, color) in Self.presets.enumerated() where cellRect(at: index).contains(point) {
             onPick?(color)
             return
         }
         showSwatches()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 123, 124: // ← → 只走三个预置色，手挑色要开色板，不适合键盘循环
+            let count = Self.presets.count
+            let step = event.keyCode == 123 ? -1 : 1
+            let next = ((min(selectedIndex, count - 1)) + step + count) % count
+            onPick?(Self.presets[next])
+        default:
+            forwardKey(event)
+        }
     }
 
     // MARK: - 更多预置色
@@ -931,14 +1228,8 @@ final class ColorSwatchPopover: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let box = bounds.insetBy(dx: 0.5, dy: 0.5)
-        let path = NSBezierPath(roundedRect: box, xRadius: 8, yRadius: 8)
-        BarPalette.background.setFill()
-        path.fill()
-        BarPalette.border.setStroke()
-        path.lineWidth = 1
-        path.stroke()
-
+        // 背景交给 NSPopover：它本身有材质、圆角和指向箭头，这里再画一层
+        // 「仿气泡」会和系统那层叠出双描边，反而一眼看出是自绘的。
         for (index, color) in colors.enumerated() {
             let column = index % Self.columns
             let row = index / Self.columns
@@ -1117,25 +1408,29 @@ enum ColorSwatch {
 // MARK: - 下拉
 
 @MainActor
-final class PropertyPopupButton: NSView {
+final class PropertyPopupButton: PropertyControl {
     var onSelect: ((Int) -> Void)?
     var selectionProvider: ((AnnotatePropertyBarView.State) -> Int)?
     var currentIndex = 0 {
-        didSet { needsDisplay = true }
+        didSet {
+            needsDisplay = true
+            setAccessibilityValue(options.indices.contains(currentIndex) ? options[currentIndex] : nil)
+        }
     }
 
     private let options: [String]
 
-    init(title: String, options: [String]) {
+    init(title: String, options: [String], label: String = "") {
         self.options = options
         self.currentIndex = options.firstIndex(of: title) ?? 0
         super.init(frame: .zero)
+        setAccessibilityRole(.popUpButton)
+        setAccessibilityLabel(label)
+        setAccessibilityValue(options.indices.contains(currentIndex) ? options[currentIndex] : nil)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override var isFlipped: Bool { true }
 
     func apply(_ state: AnnotatePropertyBarView.State) {
         if let index = selectionProvider?(state), index != currentIndex {
@@ -1146,8 +1441,12 @@ final class PropertyPopupButton: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let box = bounds.insetBy(dx: 0, dy: 4)
         BarPalette.control.setFill()
-        let path = NSBezierPath(roundedRect: box, xRadius: 5, yRadius: 5)
+        let path = NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6)
         path.fill()
+        if hoverAlpha > 0 {
+            BarPalette.hover.withAlphaComponent(hoverAlpha).setFill()
+            path.fill()
+        }
         AnnotateBarView.borderColor.setStroke()
         path.lineWidth = 1
         path.stroke()
