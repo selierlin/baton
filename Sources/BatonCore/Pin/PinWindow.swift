@@ -210,8 +210,10 @@ final class PinWindowController: NSObject, NSWindowDelegate {
     private var view: PinView?
     private var annotator: PinAnnotator?
     private var zoom: CGFloat = 1
-    /// 进缩略图之前的倍率；非 nil 就表示现在是缩略图。
-    private var thumbnailRestore: CGFloat?
+    /// 贴图创建（或从库里恢复）时的倍率。R 从缩略图还原回这里。
+    private var baseZoom: CGFloat = 1
+    /// 是否处于缩略图模式。
+    private var isThumbnailMode = false
     private var pendingSave: DispatchWorkItem?
 
     /// 缩略图模式把长边收到这么多点：够看清是什么图，又不至于挡着内容。
@@ -255,6 +257,7 @@ final class PinWindowController: NSObject, NSWindowDelegate {
                              styleMask: [.borderless, .nonactivatingPanel],
                              backing: .buffered, defer: false)
         }
+        baseZoom = zoom
 
         panel.isFloatingPanel = true
         panel.level = .floating
@@ -415,7 +418,7 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         snapshot.frame = window?.frame ?? .zero
         snapshot.alpha = window?.alphaValue ?? 0
         snapshot.zoom = zoom
-        snapshot.isThumbnail = thumbnailRestore != nil
+        snapshot.isThumbnail = isThumbnailMode
         snapshot.hasContent = view?.hasContent ?? false
         snapshot.editing = annotator?.isEditing ?? false
         snapshot.barVisible = annotator?.debugBarVisible ?? false
@@ -482,19 +485,22 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         scheduleSave()
     }
 
-    /// 缩略图模式：缩到长边 160pt，再按 R 回到原倍率。
+    /// 缩略图模式：缩到长边 160pt，再按 R 回到贴图创建时的倍率。
+    ///
+    /// 还原的目标是 `baseZoom` 而不是「进缩略图前」：中途滚轮/按键放大是临时查看，
+    /// 按两次 R 的语义是「收起来 / 放回原处」，把放大后的倍率当原样会越按越大。
     private func toggleThumbnail() {
         annotator?.setEditing(false)
-        if let restore = thumbnailRestore {
-            thumbnailRestore = nil
-            setZoom(restore)
+        if isThumbnailMode {
+            isThumbnailMode = false
+            setZoom(baseZoom)
             return
         }
         let longest = max(baseSize.width, baseSize.height)
         guard longest > 0 else { return }
         let target = min(zoom, Self.thumbnailLongest / longest)
         guard target < zoom - 0.001 else { return }
-        thumbnailRestore = zoom
+        isThumbnailMode = true
         setZoom(target)
     }
 
@@ -611,7 +617,7 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         let thumbnail = NSMenuItem(title: "缩略图模式  R", action: #selector(toggleThumbnailMenuItem),
                                    keyEquivalent: "")
         thumbnail.target = self
-        thumbnail.state = thumbnailRestore == nil ? .off : .on
+        thumbnail.state = isThumbnailMode ? .on : .off
         menu.addItem(thumbnail)
 
         menu.addItem(.separator())

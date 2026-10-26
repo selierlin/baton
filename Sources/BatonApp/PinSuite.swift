@@ -350,6 +350,13 @@ func runPinSuite() async -> Int32 {
                  "\(String(format: "%.2f", zoomBeforeDouble)) → \(String(format: "%.2f", zoomAfterDouble))")
 
     // P19 R 进缩略图：长边收到 160，并且自动退出标注
+    // 先放大两档：还原必须回到创建时的大小，而不是这个临时的放大倍率
+    pins.debugSendKey(24)
+    pins.debugSendKey(24)
+    await ScenarioEvents.sleep(350)
+    let zoomedBeforeThumbnail = pins.debugSnapshot!.zoom
+    report.check("P18b", "按 R 前先放大到非创建倍率", zoomedBeforeThumbnail > 1.15,
+                 "zoom=\(String(format: "%.2f", zoomedBeforeThumbnail))")
     pins.debugSendKey(49)          // 先进标注
     await ScenarioEvents.sleep(350)
     report.check("P19a", "R 之前处于标注态", pins.debugSnapshot?.editing == true)
@@ -361,13 +368,15 @@ func runPinSuite() async -> Int32 {
                  snapshot.isThumbnail && abs(longest - 160) < 2 && !snapshot.editing,
                  "longest=\(Int(longest)) thumbnail=\(snapshot.isThumbnail) editing=\(snapshot.editing)")
 
-    // P20 再按 R 回到原倍率
+    // P20 再按 R 回到创建时的倍率（放大过的临时倍率不算数）
     pins.debugSendKey(15)
     await ScenarioEvents.sleep(500)
     snapshot = pins.debugSnapshot!
-    report.check("P20", "再按 R 恢复原倍率",
+    report.check("P20", "再按 R 回到创建时的大小，不是放大后的",
                  !snapshot.isThumbnail && abs(snapshot.zoom - 1) < 0.01,
-                 "zoom=\(String(format: "%.3f", snapshot.zoom)) thumbnail=\(snapshot.isThumbnail)")
+                 "放大到 \(String(format: "%.2f", zoomedBeforeThumbnail))"
+                    + " → 还原 \(String(format: "%.3f", snapshot.zoom))"
+                    + " thumbnail=\(snapshot.isThumbnail)")
 
     // P21 导出：原图像素 + 标注真的烘进去了
     pins.debugSendKey(36)
