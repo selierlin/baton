@@ -1397,6 +1397,13 @@ final class OverlayView: NSView {
         guard mode == .area, lockedSelection == nil, anchor == nil, window != nil else { return }
         let inWindow = window?.convertPoint(fromScreen: NSEvent.mouseLocation) ?? .zero
         let point = convert(inWindow, from: nil)
+        // 每块屏的覆盖窗都有一条 displayLink，读的都是同一个全局光标位置。
+        // 光标不在本屏时必须收掉放大镜，否则另一块屏的边缘会挂一个跟着动的放大镜。
+        guard bounds.contains(point) else {
+            if !magnifier.isHidden { hideMagnifier() }
+            lastTickPoint = point
+            return
+        }
         if point == lastTickPoint { return }
         updateMagnifier(at: point)
         lastTickPoint = point

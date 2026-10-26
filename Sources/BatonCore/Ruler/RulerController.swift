@@ -32,8 +32,7 @@ public final class RulerController {
 
         let frames: [CapturedFrame]
         do {
-            // 尺子要的是真实像素：副屏不能按 0.5 降采样，否则读数只有一半
-            frames = try await ScreenCapturer.captureAll(nonCursorDownsample: 1)
+            frames = try await ScreenCapturer.captureAll()
         } catch CaptureFailure.screenRecordingDenied {
             PermissionCenter.request(.screenRecording)
             return .failed("缺少屏幕录制权限")

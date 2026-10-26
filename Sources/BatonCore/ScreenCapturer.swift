@@ -141,8 +141,6 @@ public enum ScreenCapturer {
         let selfApp = content.applications.first {
             $0.processID == ProcessInfo.processInfo.processIdentifier
         }
-        let cursor = CGEvent(source: nil)?.location
-
         var frames: [CapturedFrame] = []
         for display in content.displays {
             // 必须按单块 display 构造 filter，SCK 不支持多屏并集
@@ -152,12 +150,10 @@ public enum ScreenCapturer {
 
             // SCDisplay.width/height 的单位是「点」，不是像素
             let scale = CGFloat(filter.pointPixelScale)
-            let isCursorScreen = cursor.map { display.frame.contains($0) } ?? false
-            let factor: CGFloat = isCursorScreen ? 1.0 : max(0.1, nonCursorDownsample)
 
             let config = SCStreamConfiguration()
-            config.width = max(1, Int(CGFloat(display.width) * scale * factor))
-            config.height = max(1, Int(CGFloat(display.height) * scale * factor))
+            config.width = max(1, Int(CGFloat(display.width) * scale))
+            config.height = max(1, Int(CGFloat(display.height) * scale))
             config.showsCursor = false
             config.scalesToFit = false
             config.captureResolution = .best
