@@ -195,7 +195,7 @@ public final class ClipboardService {
         restoreFocus()
         // 等焦点真正回到目标 App 再按键，否则 ⌘V 会打到 Baton 自己
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(120))
+            try? await Task.sleep(for: .milliseconds(180))
             Self.synthesizePaste()
         }
     }
@@ -248,15 +248,27 @@ public final class ClipboardService {
     }
 
     private func restoreFocus() {
-        guard let app = previousApp, app.processIdentifier != NSRunningApplication.current.processIdentifier else {
+        guard let app = previousApp,
+              app.processIdentifier != NSRunningApplication.current.processIdentifier else {
+            previousApp = nil
             return
         }
-        app.activate()
         previousApp = nil
+        // macOS 14 起，后台 App 直接激活别的 App 经常被系统忽略，焦点会留在
+        // Baton 自己这个已经没有窗口的进程上，合成出来的 ⌘V 就没人接。
+        // 先把自己藏起来，让系统把前台交还，再显式激活兜底。
+        NSApp.hide(nil)
+        if !app.activate(options: [.activateIgnoringOtherApps]) {
+            ActionLog.app("clip.restoreFocus", "activate-failed app=\(app.localizedName ?? "?")")
+        }
     }
 
     private static func synthesizePaste() {
-        guard CGPreflightPostEventAccess() else { return }
+        guard CGPreflightPostEventAccess() else {
+            ActionLog.app("clip.paste", "no-post-event-access")
+            NSSound.beep()
+            return
+        }
         let source = CGEventSource(stateID: .combinedSessionState)
         // 粘贴期间屏蔽本地键盘事件，避免回灌自己
         source?.setLocalEventsFilterDuringSuppressionState(

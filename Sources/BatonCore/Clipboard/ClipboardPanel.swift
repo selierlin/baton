@@ -152,7 +152,7 @@ public final class ClipboardPanelController: NSObject {
         countLabel.textColor = .tertiaryLabelColor
         countLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let hint = NSTextField(labelWithString: "↵ 复制   ⌘↵ 粘贴   ⌥↵ 纯文本   ⌫ 删除   ⌘1-9 直选")
+        let hint = NSTextField(labelWithString: "↵ 粘贴   ⌥↵ 纯文本   ⇧↵ 仅复制   ⌫ 删除   ⌘1-9 直选")
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .tertiaryLabelColor
         hint.translatesAutoresizingMaskIntoConstraints = false
@@ -327,8 +327,13 @@ public final class ClipboardPanelController: NSObject {
             return true
         case #selector(NSResponder.insertNewline(_:)):
             let flags = NSEvent.modifierFlags
-            commit(paste: flags.contains(.command) || flags.contains(.option),
-                   plainText: flags.contains(.option))
+            // 回车默认直接粘到前台 App（和 Maccy / Raycast 一致）；
+            // ⇧↵ 才是「只复制不粘贴」，⌥↵ 粘纯文本。
+            if flags.contains(.shift) {
+                commit(paste: false, plainText: false)
+            } else {
+                commit(paste: true, plainText: flags.contains(.option))
+            }
             return true
         case #selector(NSResponder.deleteBackward(_:)),
              #selector(NSResponder.deleteForward(_:)):
