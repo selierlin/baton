@@ -234,12 +234,25 @@ ad-hoc 签名每次重建 cdhash 都变，TCC 授权会静默失效（界面勾�
 
 ### 输入法记忆（P2）
 
-默认开启，菜单位置：菜单栏 → 按 App 记住输入法。
+默认开启，入口：设置 → 输入法，或菜单栏 → 高级 → 输入法设置…（同一菜单里还有快捷开关）。
 
 - 切走时记住当前 App 用的输入源，切回来自动恢复；**没有记录就不动**，
   不强行切回某个"默认源"
-- 显式规则优先于记忆（`setRule(bundleID:sourceID:)`，UI 还没做）
-- 设置文件：`~/Library/Application Support/Baton/input-source.json`
+- 显式规则优先于记忆；设置页里是一个**可搜索的 App 列表**：输名字或 bundle id
+  直接给某个 App 选源，不用先「添加」。已配置的排最前，其次是正在运行的、记住过的
+- 「只看常用」只显示配置过 / 正在运行 / 记住过的 App；搜索时自动在全量里找
+- 行内第一项 `记忆：xx` 表示这个 App 当前会恢复到的源；换成具体源就变成显式规则
+- **忽略**：完全不管这个 App（不套规则、不记记忆），适合自己管输入法的编辑器 / 终端
+- **切换延迟**：0 / 50 / 100 / 200 ms。某些 App（Electron、JetBrains）在激活瞬间切源会吞掉首字符
+- **浏览器地址栏**：焦点进地址栏时切到指定源（一般选 ABC），敲网址不用先过一遍中文候选。
+  只对 Chrome / Safari / Edge / Brave / Arc / Firefox 等结构可识别的浏览器生效；判定方式是
+  从焦点元素往上找 `AXWebArea`——找不到且焦点是文本框，就是浏览器外壳。不读 URL、不存 URL、
+  不用 AppleScript。只在「进 / 出地址栏」时切一次，你手动换回中文不会一直被按回去；
+  地址栏里用的源也不会写进 App 记忆
+- 只处理 `activationPolicy == .regular` 的前台 App：通知中心、输入法候选、后台代理
+  短暂"前台"不会写进记忆
+- 设置文件：`~/Library/Application Support/Baton/input-source.json`（旧版只有
+  enabled/rules/memory 三个键，升级后自动补默认值）
 - 不需要任何隐私权限（TIS 本身不受 TCC 管）
 
 诊断：
@@ -247,6 +260,8 @@ ad-hoc 签名每次重建 cdhash 都变，TCC 授权会静默失效（界面勾�
 ```
 dist/Baton.app/Contents/MacOS/Baton --input-sources          # 列出已启用、可选的源
 dist/Baton.app/Contents/MacOS/Baton --input-switch <id>      # 直接切（会改系统状态）
+dist/Baton.app/Contents/MacOS/Baton --browser-focus          # 看当前焦点算成 page / shell / unknown
+dist/Baton.app/Contents/MacOS/Baton --prefs 1                # 直接打开输入法设置页
 ```
 
 ### 截图三种进入方式（P3）
@@ -469,7 +484,7 @@ BATON_STITCH_DEBUG=1 ...                    # 逐帧打印 adv/back/still/miss
   footprint 18 MB → 20 MB（首尾差 +2 MB，峰值 21 MB 一次），前 5 小时 18 MB，10 小时后稳在 19–20 MB，
   之后 27 小时无爬升；RSS 75 MB → 14 MB（页被压缩/回收，属正常）。采样脚本 `Scripts/soak-sample.sh`
   仍在跑，每 5 分钟一条记到 `soak.log`。
-- **输入法规则编辑 UI**：只有 API（`setRule(bundleID:sourceID:)`），没有界面；按 URL / 窗口标题匹配也没做。
+- **输入法网站级规则**：只做了按 App；按 URL / 窗口标题匹配没做（要读浏览器地址栏，得额外授权、还要处理多浏览器兼容）。
 - **麦克风旁白的时间对齐**：麦克风样本按 host clock 直接排进时间轴，没做 `CMSyncConvertTime`
   跨时钟换算。短录（几分钟）误差在毫秒级，长录理论上会有采样时钟漂移。
 - **麦克风旁白的实机验证**：需要解锁屏幕后点一次系统授权框（锁屏状态下 TCC 直接拒）。

@@ -166,11 +166,31 @@ case "--input-switch":
     }
     exit(0)
 
+case "--browser-focus":
+    // 冒烟：焦点在地址栏 / 网页输入框时各跑一次，确认分类对了
+    MainActor.assumeIsolated {
+        guard let front = NSWorkspace.shared.frontmostApplication else {
+            print("没有前台 App")
+            exit(1)
+        }
+        let focus = BrowserFocusReader.focus(pid: front.processIdentifier)
+        print("front=\(front.localizedName ?? "-") [\(front.bundleIdentifier ?? "-")] "
+              + "supported=\(BrowserFocusReader.isSupported(front.bundleIdentifier)) "
+              + "focus=\(focus) trusted=\(AXIsProcessTrusted())")
+    }
+    exit(0)
+
 case "--clip-panel":
     shell.start()
     shell.openClipboardPanel()
     // 冒烟：给布局与首响应者 1.5s 暴露崩溃，然后自己退出
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { exit(0) }
+    app.run()
+
+case "--prefs":
+    shell.start()
+    // 冒烟用：直接落到指定页，省得用 UI scripting 点菜单栏
+    shell.openPreferences(tab: args.count > 1 ? (Int(args[1]) ?? 0) : 0)
     app.run()
 
 case "--scroll-status":

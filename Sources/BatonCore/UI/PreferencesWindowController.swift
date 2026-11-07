@@ -35,6 +35,7 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
     private var pages: [SettingsPage] = []
     private var currentPage = 0
     private var generalPage: GeneralSettingsPage?
+    private var inputSourcePage: InputSourceSettingsPage?
     private var translatePage: TranslateSettingsPage?
     private var ocrPage: OCRSettingsPage?
     private var hotkeyPage: HotkeySettingsPage?
@@ -70,8 +71,8 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
 
     private func reload() {
         generalPage?.reload(loginEnabled: loginItem.status.enabled,
-                            inputEnabled: inputSource?.isEnabled ?? false,
                             smoothEnabled: smoothScroll?.isEnabled ?? false)
+        inputSourcePage?.reload()
         translatePage?.reload()
         ocrPage?.reload()
         hotkeyPage?.reload()
@@ -94,10 +95,6 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
         let general = GeneralSettingsPage()
         general.onLoginToggle = { [weak self] enabled in
             self?.applyLogin(enabled)
-        }
-        general.onInputSourceToggle = { [weak self] enabled in
-            self?.inputSource?.setEnabled(enabled)
-            self?.onChange?()
         }
         general.onSmoothScrollToggle = { [weak self] enabled in
             self?.smoothScroll?.setEnabled(enabled)
@@ -141,6 +138,10 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
         }
         generalPage = general
 
+        let inputPage = InputSourceSettingsPage(service: inputSource)
+        inputPage.onChange = { [weak self] in self?.onChange?() }
+        inputSourcePage = inputPage
+
         let translate = TranslateSettingsPage()
         translate.onSave = { [weak self] in self?.onChange?() }
         translatePage = translate
@@ -159,7 +160,8 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
 
         // 高度按各页内容给：页面内部是从顶往下排，多出来的空间落在底部，所以给宽一点也不会错位
         var entries: [(title: String, symbol: String, view: NSView, height: CGFloat)] = [
-            ("通用", "gearshape", general, 600),
+            ("通用", "gearshape", general, 560),
+            ("输入法", "keyboard", inputPage, 660),
             ("翻译", "character.book.closed", translate, 470),
             ("OCR", "text.viewfinder", ocr, 360),
             ("热键", "command", hotkey, 640),
@@ -169,7 +171,7 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
             let ruler = RulerSettingsPage(store: rulerSettings)
             ruler.onChange = { [weak self] in self?.onChange?() }
             rulerPage = ruler
-            entries.insert(("测量", "ruler", ruler, 400), at: 1)
+            entries.insert(("测量", "ruler", ruler, 400), at: 2)
         }
 
         pages = entries.map { entry in
@@ -290,7 +292,6 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
                               name: "login.set", above: window)
         }
         generalPage?.reload(loginEnabled: loginItem.status.enabled,
-                            inputEnabled: inputSource?.isEnabled ?? false,
                             smoothEnabled: smoothScroll?.isEnabled ?? false)
         onChange?()
     }
@@ -299,7 +300,6 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
 
     public func windowWillClose(_ notification: Notification) {
         generalPage?.reload(loginEnabled: loginItem.status.enabled,
-                            inputEnabled: inputSource?.isEnabled ?? false,
                             smoothEnabled: smoothScroll?.isEnabled ?? false)
         onClose?()
     }
@@ -310,7 +310,6 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
 @MainActor
 private final class GeneralSettingsPage: NSView {
     var onLoginToggle: ((Bool) -> Void)?
-    var onInputSourceToggle: ((Bool) -> Void)?
     var onSmoothScrollToggle: ((Bool) -> Void)?
     /// 拖动滑杆时回写「每行多少点 / 平滑时长」
     var onSmoothTuning: ((Double, Double) -> Void)?
@@ -332,7 +331,6 @@ private final class GeneralSettingsPage: NSView {
 
     private let delayPopup = NSPopUpButton()
     private let loginSwitch = NSSwitch()
-    private let inputSwitch = NSSwitch()
     private let smoothSwitch = NSSwitch()
     private let audioSwitch = NSSwitch()
     private let microphoneSwitch = NSSwitch()
@@ -363,7 +361,7 @@ private final class GeneralSettingsPage: NSView {
         delayPopup.translatesAutoresizingMaskIntoConstraints = false
         delayPopup.widthAnchor.constraint(equalToConstant: 90).isActive = true
 
-        for control in [loginSwitch, inputSwitch, smoothSwitch, audioSwitch, microphoneSwitch] {
+        for control in [loginSwitch, smoothSwitch, audioSwitch, microphoneSwitch] {
             control.translatesAutoresizingMaskIntoConstraints = false
             control.widthAnchor.constraint(equalToConstant: 38).isActive = true
         }
@@ -391,8 +389,6 @@ private final class GeneralSettingsPage: NSView {
 
         loginSwitch.target = self
         loginSwitch.action = #selector(loginChanged)
-        inputSwitch.target = self
-        inputSwitch.action = #selector(inputChanged)
         smoothSwitch.target = self
         smoothSwitch.action = #selector(smoothChanged)
         audioSwitch.target = self
@@ -442,9 +438,6 @@ private final class GeneralSettingsPage: NSView {
         SettingsLayout.install([
             SettingsLayout.section("常规", [
                 SettingsLayout.row("登录时启动", control: loginSwitch),
-                SettingsLayout.row("按 App 记住输入法",
-                                   detail: "切到别的 App 时自动换回上次用的输入法",
-                                   control: inputSwitch),
             ]),
             SettingsLayout.section("滚动", [
                 SettingsLayout.row("平滑滚动", detail: "只接管滚轮，触控板保持系统手感",
@@ -468,9 +461,8 @@ private final class GeneralSettingsPage: NSView {
         ], in: self)
     }
 
-    func reload(loginEnabled: Bool, inputEnabled: Bool, smoothEnabled: Bool) {
+    func reload(loginEnabled: Bool, smoothEnabled: Bool) {
         loginSwitch.state = loginEnabled ? .on : .off
-        inputSwitch.state = inputEnabled ? .on : .off
         smoothSwitch.state = smoothEnabled ? .on : .off
         if let settings = smoothSettings?() {
             distanceSlider.doubleValue = settings.pointsPerLine
@@ -548,7 +540,6 @@ private final class GeneralSettingsPage: NSView {
     }
 
     @objc private func loginChanged() { onLoginToggle?(loginSwitch.state == .on) }
-    @objc private func inputChanged() { onInputSourceToggle?(inputSwitch.state == .on) }
     @objc private func smoothChanged() {
         updateTuning()
         onSmoothScrollToggle?(smoothSwitch.state == .on)
@@ -563,7 +554,6 @@ private final class GeneralSettingsPage: NSView {
         guard sender.tag >= 0, sender.tag < kinds.count else { return }
         PermissionCenter.request(kinds[sender.tag])
         reload(loginEnabled: loginSwitch.state == .on,
-               inputEnabled: inputSwitch.state == .on,
                smoothEnabled: smoothSwitch.state == .on)
     }
 }

@@ -352,6 +352,8 @@ public final class AppShell: NSObject {
         inputSourceItem.state = (inputSource?.isEnabled ?? false) ? .on : .off
         inputSourceMenuItem = inputSourceItem
         advanced.append(inputSourceItem)
+        advanced.append(makeItem("输入法设置…", action: #selector(showInputSourceSettings),
+                                 symbol: "character.cursor.ibeam"))
 
         let smoothItem = makeItem("平滑滚动（滚轮）", action: #selector(toggleSmoothScroll),
                                   symbol: "scroll")
@@ -483,6 +485,11 @@ public final class AppShell: NSObject {
         guard let inputSource else { return }
         inputSource.setEnabled(!inputSource.isEnabled)
         inputSourceMenuItem?.state = inputSource.isEnabled ? .on : .off
+    }
+
+    /// 页序：通用 0、输入法 1、测量 2（有的话）。
+    @objc private func showInputSourceSettings() {
+        openPreferences(tab: 1)
     }
 
     @objc private func toggleSmoothScroll() {
