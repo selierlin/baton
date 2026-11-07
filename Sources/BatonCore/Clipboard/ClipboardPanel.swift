@@ -661,7 +661,7 @@ private final class ClipRowCell: NSTableCellView {
 
 /// 预览区顶部的一行元信息。列表行只保留时间，其余都挪到这里，
 /// 换来更密的行高（同屏能多看一半条目）。
-private func clipDetail(for item: ClipItem) -> String {
+private func clipDetailParts(for item: ClipItem) -> [String] {
     var parts: [String] = [item.clipKind.title]
     switch item.clipKind {
     case .text:
@@ -679,10 +679,7 @@ private func clipDetail(for item: ClipItem) -> String {
     case .color:
         break
     }
-    if let app = item.sourceApp, !app.isEmpty {
-        parts.append("来自 \(app)")
-    }
-    return parts.joined(separator: " · ")
+    return parts
 }
 
 @MainActor
@@ -768,6 +765,36 @@ private final class ClipPreviewView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    /// 元信息行：`文字 · 32 字 · [Chrome 图标] Google Chrome`。
+    /// 图标做成文本附件，跟着应用名一起排版，不用另起一个视图对齐。
+    private static func metaText(for item: ClipItem) -> NSAttributedString {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        let text = NSMutableAttributedString(
+            string: clipDetailParts(for: item).joined(separator: " · "),
+            attributes: attributes
+        )
+
+        guard let app = item.sourceApp, !app.isEmpty else { return text }
+        text.append(NSAttributedString(string: " · ", attributes: attributes))
+        if let icon = AppIconProvider.shared.icon(bundleID: item.sourceBundleID,
+                                                  appName: app,
+                                                  pointSize: 13) {
+            let attachment = NSTextAttachment()
+            attachment.image = icon
+            // 底边压到基线以下，跟 11pt 文字视觉居中
+            attachment.bounds = CGRect(x: 0, y: -2.5, width: 13, height: 13)
+            text.append(NSAttributedString(attachment: attachment))
+            text.append(NSAttributedString(string: " \(app)", attributes: attributes))
+        } else {
+            // 查不到图标（App 已卸载、来源是 loginwindow 之类）时保留文字说明
+            text.append(NSAttributedString(string: "来自 \(app)", attributes: attributes))
+        }
+        return text
+    }
+
     func show(_ item: ClipItem?, store: ClipboardStore?) {
         textScroll.isHidden = true
         imageView.isHidden = true
@@ -779,7 +806,7 @@ private final class ClipPreviewView: NSView {
             hint.stringValue = "选中一条记录预览"
             return
         }
-        metaLabel.stringValue = clipDetail(for: item)
+        metaLabel.attributedStringValue = Self.metaText(for: item)
 
         switch item.clipKind {
         case .text:

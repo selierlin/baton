@@ -41,6 +41,22 @@ final class ClipboardMigrationTests: XCTestCase {
         XCTAssertEqual(try store.contents(for: result.item.id).map(\.type), [ClipType.string])
     }
 
+    /// v3 加的 bundle id 列：老记录为空（面板按名字兜底找图标），新记录要存下来。
+    func testSourceBundleIDSurvivesV3Migration() throws {
+        try makeV1Database()
+
+        let store = try ClipboardStore(directory: directory)
+        XCTAssertNil(try store.item(id: "text-item")?.sourceBundleID)
+
+        let result = try store.insert(ClipDraft(kind: .text, contentHash: "bundle",
+                                                text: "带来源", byteSize: 2,
+                                                sourceApp: "文本编辑",
+                                                sourceBundleID: "com.apple.TextEdit"))
+        let item = try XCTUnwrap(try store.item(id: result.item.id))
+        XCTAssertEqual(item.sourceApp, "文本编辑")
+        XCTAssertEqual(item.sourceBundleID, "com.apple.TextEdit")
+    }
+
     /// 用和线上完全一致的 v1 DDL 建库，这样 v2 迁移走的是真实路径。
     private func makeV1Database() throws {
         let queue = try DatabaseQueue(path: directory.appendingPathComponent("baton.sqlite").path)

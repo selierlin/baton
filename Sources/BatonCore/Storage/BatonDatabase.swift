@@ -152,6 +152,12 @@ public final class BatonDatabase: Sendable {
             }
         }
 
+        // v3：记录来源 App 的 bundle id，面板上要按它取 App 图标。
+        // 老数据只有名字，图标在渲染时按名字兜底查找。
+        migrator.registerMigration("v3") { db in
+            try db.execute(sql: "ALTER TABLE item ADD COLUMN sourceBundleID TEXT")
+        }
+
         return migrator
     }
 

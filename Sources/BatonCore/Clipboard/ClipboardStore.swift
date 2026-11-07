@@ -26,6 +26,8 @@ public struct ClipItem: Sendable, Codable, FetchableRecord, PersistableRecord, I
     public var createdAt: Double
     public var lastUsedAt: Double?
     public var sourceApp: String?
+    /// 来源 App 的 bundle id；老数据为空，图标按名字兜底查
+    public var sourceBundleID: String?
     public var contentHash: String
     public var text: String?
     public var blobPath: String?
@@ -54,6 +56,7 @@ public struct ClipDraft: Sendable {
     public var pixelHeight: Int?
     public var byteSize: Int
     public var sourceApp: String?
+    public var sourceBundleID: String?
     public var meta: String?
     public var contents: [ClipContent]
 
@@ -67,6 +70,7 @@ public struct ClipDraft: Sendable {
         pixelHeight: Int? = nil,
         byteSize: Int = 0,
         sourceApp: String? = nil,
+        sourceBundleID: String? = nil,
         meta: String? = nil,
         contents: [ClipContent] = []
     ) {
@@ -79,6 +83,7 @@ public struct ClipDraft: Sendable {
         self.pixelHeight = pixelHeight
         self.byteSize = byteSize
         self.sourceApp = sourceApp
+        self.sourceBundleID = sourceBundleID
         self.meta = meta
         self.contents = contents
     }
@@ -129,7 +134,7 @@ public final class ClipboardStore: Sendable {
     public var database: BatonDatabase { db }
 
     private static let columns = """
-        id, kind, createdAt, lastUsedAt, sourceApp, contentHash, text, blobPath,
+        id, kind, createdAt, lastUsedAt, sourceApp, sourceBundleID, contentHash, text, blobPath,
         pixelWidth, pixelHeight, scale, byteSize, meta
         """
 
@@ -178,6 +183,7 @@ public final class ClipboardStore: Sendable {
                 createdAt: now,
                 lastUsedAt: nil,
                 sourceApp: draft.sourceApp,
+                sourceBundleID: draft.sourceBundleID,
                 contentHash: draft.contentHash,
                 text: draft.text,
                 blobPath: blobPath,

@@ -96,7 +96,7 @@ public final class ClipboardService {
 
         var snapshot: PasteboardSnapshot?
         for attempt in 0..<3 {
-            snapshot = PasteboardReader.read(pasteboard, sourceApp: sourceApp)
+            snapshot = PasteboardReader.read(pasteboard, sourceApp: sourceApp.name)
             if snapshot != nil { break }
             if attempt < 2 {
                 try? await Task.sleep(for: .milliseconds(80))
@@ -113,7 +113,8 @@ public final class ClipboardService {
             pixelWidth: snapshot.pixelWidth,
             pixelHeight: snapshot.pixelHeight,
             byteSize: snapshot.byteSize,
-            sourceApp: sourceApp,
+            sourceApp: sourceApp.name,
+            sourceBundleID: sourceApp.bundleID,
             meta: snapshot.filePaths,
             contents: snapshot.contents
         )
@@ -135,13 +136,14 @@ public final class ClipboardService {
 
     /// 采集时的前台 App。事件总线缓存的 frontApp 只在 App 激活时更新，
     /// 复制动作本身不激活 App，所以这里现查更准；面板开着时前台是 Baton 自己，回退到缓存。
-    private func currentSourceApp() -> String? {
+    /// bundle id 用来在面板上取 App 图标，名字用于显示与老数据兜底。
+    private func currentSourceApp() -> (name: String?, bundleID: String?) {
         let front = NSWorkspace.shared.frontmostApplication
         if let name = front?.localizedName,
            front?.processIdentifier != NSRunningApplication.current.processIdentifier {
-            return name
+            return (name, front?.bundleIdentifier)
         }
-        return hub.frontApp?.name
+        return (hub.frontApp?.name, hub.frontApp?.bundleID)
     }
 
     // MARK: - 图片标题
