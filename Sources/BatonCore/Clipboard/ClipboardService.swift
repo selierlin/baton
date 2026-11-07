@@ -1,5 +1,12 @@
 import AppKit
+import Carbon.HIToolbox
+import ImageIO
 import os
+
+public extension Notification.Name {
+    /// 历史有增删改（采集、清空、OCR 回填标题），面板据此重读。
+    static let batonClipboardDidChange = Notification.Name("com.selier.baton.clipboardDidChange")
+}
 
 /// 剪贴板服务：监听 → 入库 → 面板 → 回写。
 ///
@@ -15,6 +22,7 @@ public final class ClipboardService {
     private var panel: ClipboardPanelController?
     private var task: Task<Void, Never>?
     private var previousApp: NSRunningApplication?
+    private var ocrTasks: [String: Task<Void, Never>] = [:]
 
     public init(store: ClipboardStore, hub: EventHub) {
         self.store = store
@@ -26,8 +34,8 @@ public final class ClipboardService {
 
         if panel == nil {
             let panel = ClipboardPanelController(store: store)
-            panel.onCommit = { [weak self] item, paste in
-                self?.commit(item, paste: paste)
+            panel.onCommit = { [weak self] item, paste, plainText in
+                self?.commit(item, paste: paste, plainText: plainText)
             }
             self.panel = panel
         }
@@ -51,6 +59,8 @@ public final class ClipboardService {
         task?.cancel()
         task = nil
         panel?.hide()
+        ocrTasks.values.forEach { $0.cancel() }
+        ocrTasks.removeAll()
     }
 
     public func showHistory() {
@@ -90,12 +100,14 @@ public final class ClipboardService {
             kind: snapshot.kind,
             contentHash: snapshot.contentHash,
             text: snapshot.text,
-            pngData: snapshot.pngData,
+            pngData: snapshot.imageData,
+            imageExt: snapshot.imageExt,
             pixelWidth: snapshot.pixelWidth,
             pixelHeight: snapshot.pixelHeight,
             byteSize: snapshot.byteSize,
             sourceApp: sourceApp,
-            meta: snapshot.filePaths
+            meta: snapshot.filePaths,
+            contents: snapshot.contents
         )
 
         do {
@@ -103,7 +115,11 @@ public final class ClipboardService {
             if !result.deduplicated {
                 let removed = try store.trim()
                 if removed > 0 { collectGarbage() }
+                if snapshot.kind == .image {
+                    scheduleImageTitle(item: result.item)
+                }
             }
+            NotificationCenter.default.post(name: .batonClipboardDidChange, object: nil)
         } catch {
             log.error("剪贴板入库失败：\(String(describing: error), privacy: .public)")
         }
@@ -120,10 +136,55 @@ public final class ClipboardService {
         return hub.frontApp?.name
     }
 
+    // MARK: - 图片标题
+
+    /// 图片只靠「图片 1920×1080」在列表里等于全都长一样，用 OCR 前两行当标题。
+    /// 失败就保留尺寸摘要，不影响使用。
+    private func scheduleImageTitle(item: ClipItem) {
+        guard let path = item.blobPath,
+              ClipboardPrefs.shared.ocrTitles,
+              ocrTasks[item.id] == nil else { return }
+        let url = store.blobURL(forRelativePath: path)
+
+        ocrTasks[item.id] = Task { [weak self] in
+            defer { self?.ocrTasks[item.id] = nil }
+            guard let text = await Self.recognizeTitle(at: url), !Task.isCancelled else { return }
+            guard let self else { return }
+            do {
+                try self.store.updateText(id: item.id, text: text)
+                NotificationCenter.default.post(name: .batonClipboardDidChange, object: nil)
+                self.log.debug("图片标题回填：\(text.prefix(30), privacy: .public)")
+            } catch {
+                self.log.error("图片标题回填失败：\(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    private static func recognizeTitle(at url: URL) async -> String? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: 1600,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        let transport: any OCRTransport = SubprocessOCRTransport()
+        guard let result = try? await transport.recognize(OCRRequest(image: image)),
+              !result.isEmpty else { return nil }
+
+        let lines = result.lines
+            .map { $0.text.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .prefix(2)
+        let title = lines.joined(separator: " ")
+        return title.isEmpty ? nil : String(title.prefix(120))
+    }
+
     // MARK: - 回写
 
-    private func commit(_ item: ClipItem, paste: Bool) {
-        write(item)
+    private func commit(_ item: ClipItem, paste: Bool, plainText: Bool) {
+        write(item, plainText: plainText)
         try? store.touch(id: item.id)
 
         guard paste else {
@@ -139,23 +200,47 @@ public final class ClipboardService {
         }
     }
 
-    private func write(_ item: ClipItem) {
+    private func write(_ item: ClipItem, plainText: Bool) {
         let pasteboard = NSPasteboard.general
+        var contents = (try? store.contents(for: item.id)) ?? []
+        if plainText { contents = ClipType.plainTextOnly(contents) }
+
         pasteboard.clearContents()
 
-        switch item.clipKind {
-        case .text, .color:
-            pasteboard.setString(item.text ?? "", forType: .string)
-        case .image:
-            if let path = item.blobPath,
-               let image = NSImage(contentsOf: store.blobURL(forRelativePath: path)) {
-                pasteboard.writeObjects([image])
+        if contents.isEmpty {
+            // 升级前的老记录（理论上迁移已补齐，兜底一次）
+            switch item.clipKind {
+            case .text, .color:
+                pasteboard.setString(item.text ?? "", forType: .string)
+            case .image:
+                if let path = item.blobPath,
+                   let data = try? Data(contentsOf: store.blobURL(forRelativePath: path)) {
+                    pasteboard.setData(data, forType: .png)
+                }
+            case .file:
+                let urls = (item.meta ?? "").split(separator: "\n")
+                    .map { URL(fileURLWithPath: String($0)) as NSURL }
+                if !urls.isEmpty { pasteboard.writeObjects(urls) }
             }
-        case .file:
-            let paths = (item.meta ?? "").split(separator: "\n").map(String.init)
-            let urls = paths.map { URL(fileURLWithPath: $0) as NSURL }
-            if !urls.isEmpty {
-                pasteboard.writeObjects(urls)
+        } else {
+            var fileItems: [NSPasteboardItem] = []
+            for content in contents {
+                let data = content.value ?? content.blobPath.flatMap {
+                    try? Data(contentsOf: store.blobURL(forRelativePath: $0))
+                }
+                guard let data else { continue }
+
+                if content.type == ClipType.fileURL {
+                    // 多文件必须靠 writeObjects 才能一起粘出去
+                    let pasteItem = NSPasteboardItem()
+                    pasteItem.setData(data, forType: .fileURL)
+                    fileItems.append(pasteItem)
+                } else {
+                    pasteboard.setData(data, forType: NSPasteboard.PasteboardType(content.type))
+                }
+            }
+            if !fileItems.isEmpty {
+                pasteboard.writeObjects(fileItems)
             }
         }
 
@@ -172,14 +257,24 @@ public final class ClipboardService {
 
     private static func synthesizePaste() {
         guard CGPreflightPostEventAccess() else { return }
-        let source = CGEventSource(stateID: .hidSystemState)
-        let keyCodeV: CGKeyCode = 0x09
-        let down = CGEvent(keyboardEventSource: source, virtualKey: keyCodeV, keyDown: true)
-        down?.flags = .maskCommand
-        down?.post(tap: .cghidEventTap)
-        let up = CGEvent(keyboardEventSource: source, virtualKey: keyCodeV, keyDown: false)
-        up?.flags = .maskCommand
-        up?.post(tap: .cghidEventTap)
+        let source = CGEventSource(stateID: .combinedSessionState)
+        // 粘贴期间屏蔽本地键盘事件，避免回灌自己
+        source?.setLocalEventsFilterDuringSuppressionState(
+            [.permitLocalMouseEvents, .permitSystemDefinedEvents],
+            state: .eventSuppressionStateSuppressionInterval
+        )
+
+        let keyCode = KeyboardLayout.keyCode(for: "v")
+        var flags: CGEventFlags = .maskCommand
+        // 左右修饰键标记，Chromium 系靠它区分
+        flags.insert(CGEventFlags(rawValue: 0x000008))
+
+        let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
+        down?.flags = flags
+        down?.post(tap: .cgSessionEventTap)
+        let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
+        up?.flags = flags
+        up?.post(tap: .cgSessionEventTap)
     }
 
     // MARK: - 维护
@@ -190,6 +285,49 @@ public final class ClipboardService {
             if removed > 0 { log.info("回收 \(removed) 个孤儿 blob") }
         } catch {
             log.error("blob 回收失败：\(String(describing: error), privacy: .public)")
+        }
+    }
+}
+
+/// 按当前键盘布局找字符对应的键码。
+///
+/// 写死 0x09 只对 QWERTY 成立：Dvorak、「Dvorak - QWERTY ⌘」这类布局里 v 不在那个位置，
+/// 合成的 ⌘V 会粘出别的东西。
+enum KeyboardLayout {
+    static func keyCode(for character: Character, fallback: CGKeyCode = 0x09) -> CGKeyCode {
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let pointer = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
+            return fallback
+        }
+        let data = Unmanaged<CFData>.fromOpaque(pointer).takeUnretainedValue() as Data
+        let target = String(character).lowercased()
+
+        return data.withUnsafeBytes { buffer -> CGKeyCode in
+            guard let layout = buffer.bindMemory(to: UCKeyboardLayout.self).baseAddress else {
+                return fallback
+            }
+            for code in 0..<128 {
+                var deadKeys: UInt32 = 0
+                var chars = [UniChar](repeating: 0, count: 4)
+                var length = 0
+                let status = UCKeyTranslate(
+                    layout,
+                    UInt16(code),
+                    UInt16(kUCKeyActionDisplay),
+                    0,
+                    UInt32(LMGetKbdType()),
+                    OptionBits(kUCKeyTranslateNoDeadKeysBit),
+                    &deadKeys,
+                    chars.count,
+                    &length,
+                    &chars
+                )
+                guard status == noErr, length > 0 else { continue }
+                if String(utf16CodeUnits: chars, count: length).lowercased() == target {
+                    return CGKeyCode(code)
+                }
+            }
+            return fallback
         }
     }
 }

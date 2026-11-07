@@ -99,6 +99,59 @@ public final class BatonDatabase: Sendable {
             try db.execute(sql: "CREATE VIRTUAL TABLE item_fts USING fts5(text, tokenize='trigram')")
         }
 
+        // v2：一条 item 对多份原始表示。老库只有「一种类型 + 一个 blob」，
+        // 按 kind 还原成对应 pasteboard 类型，保证升级后旧记录还能原样粘回去。
+        migrator.registerMigration("v2") { db in
+            try db.execute(sql: """
+                CREATE TABLE item_content (
+                  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                  itemID    TEXT NOT NULL,
+                  type      TEXT NOT NULL,
+                  ordinal   INTEGER NOT NULL DEFAULT 0,
+                  value     BLOB,
+                  blobPath  TEXT
+                )
+                """)
+            try db.execute(sql: "CREATE INDEX idx_item_content_item ON item_content(itemID)")
+
+            let rows = try Row.fetchAll(db, sql: "SELECT id, kind, text, blobPath, meta FROM item")
+            for row in rows {
+                let id: String = row["id"]
+                let kind: Int = row["kind"]
+                let text: String? = row["text"]
+                let blobPath: String? = row["blobPath"]
+                let meta: String? = row["meta"]
+
+                switch kind {
+                case 2:
+                    // v1 的图片一律重编码成 PNG 存 blob
+                    if let blobPath {
+                        try db.execute(sql: """
+                            INSERT INTO item_content (itemID, type, ordinal, value, blobPath)
+                            VALUES (?, ?, 0, NULL, ?)
+                            """, arguments: [id, "public.png", blobPath])
+                    }
+                case 3:
+                    // 文件：meta 是换行分隔的完整路径，一条一个 file-url
+                    let paths = (meta ?? "").split(separator: "\n").map(String.init)
+                    for (index, path) in paths.enumerated() {
+                        let data = URL(fileURLWithPath: path).dataRepresentation
+                        try db.execute(sql: """
+                            INSERT INTO item_content (itemID, type, ordinal, value, blobPath)
+                            VALUES (?, ?, ?, ?, NULL)
+                            """, arguments: [id, ClipType.fileURL, index, data])
+                    }
+                default:
+                    if let text, let data = text.data(using: .utf8) {
+                        try db.execute(sql: """
+                            INSERT INTO item_content (itemID, type, ordinal, value, blobPath)
+                            VALUES (?, ?, 0, ?, NULL)
+                            """, arguments: [id, ClipType.string, data])
+                    }
+                }
+            }
+        }
+
         return migrator
     }
 
@@ -108,8 +161,8 @@ public final class BatonDatabase: Sendable {
         directory.appendingPathComponent(path)
     }
 
-    public func writeBlob(_ data: Data, hash: String) throws -> String {
-        let relative = "blobs/\(hash).png"
+    public func writeBlob(_ data: Data, hash: String, ext: String = "png") throws -> String {
+        let relative = "blobs/\(hash).\(ext)"
         let url = directory.appendingPathComponent(relative)
         if !FileManager.default.fileExists(atPath: url.path) {
             try data.write(to: url, options: .atomic)
@@ -117,11 +170,14 @@ public final class BatonDatabase: Sendable {
         return relative
     }
 
-    /// 孤儿回收：不做引用计数，直接删掉没有被任何 item 指向的文件。
+    /// 孤儿回收：不做引用计数，直接删掉没有被任何 item / item_content 指向的文件。
     @discardableResult
     public func collectOrphanBlobs() throws -> Int {
-        let referenced = try dbQueue.read { db in
-            try String.fetchSet(db, sql: "SELECT blobPath FROM item WHERE blobPath IS NOT NULL")
+        let referenced = try dbQueue.read { db -> Set<String> in
+            let items = try String.fetchSet(db, sql: "SELECT blobPath FROM item WHERE blobPath IS NOT NULL")
+            let contents = try String.fetchSet(db,
+                                               sql: "SELECT blobPath FROM item_content WHERE blobPath IS NOT NULL")
+            return items.union(contents)
         }
         let files = try FileManager.default.contentsOfDirectory(
             at: blobDirectory,

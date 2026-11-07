@@ -97,7 +97,6 @@ public final class EventHub {
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var tapWatchdog: Timer?
-    private var ignoreNextPasteboardWrites = 0
 
     public init() {}
 
@@ -137,9 +136,12 @@ public final class EventHub {
         }
     }
 
-    /// 自己往剪贴板写内容后调用，避免 0.5s 轮询把刚写的内容再存一条。
+    /// 自己往剪贴板写内容后调用：把当次 changeCount 直接记成「已见过」。
+    ///
+    /// 以前用计数器，连写两次后对不上实际的 changeCount 就会把紧接的外部复制吞掉；
+    /// 记当前值则是幂等的，写几次都不会漂。
     public func noteSelfPasteboardWrite() {
-        ignoreNextPasteboardWrites += 1
+        clipboardChangeCount = NSPasteboard.general.changeCount
     }
 
     // MARK: - front app
@@ -171,7 +173,8 @@ public final class EventHub {
 
     private func startClipboardPolling() {
         clipboardChangeCount = NSPasteboard.general.changeCount
-        clipboardTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        // 0.25s：连按两次复制的间隔通常在 0.3s 以上，再慢就会漏中间那条
+        clipboardTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.pollPasteboard()
             }
@@ -182,11 +185,6 @@ public final class EventHub {
         let count = NSPasteboard.general.changeCount
         guard count != clipboardChangeCount else { return }
         clipboardChangeCount = count
-
-        if ignoreNextPasteboardWrites > 0 {
-            ignoreNextPasteboardWrites -= 1
-            return
-        }
         emit(.clipboardChanged(changeCount: count))
     }
 

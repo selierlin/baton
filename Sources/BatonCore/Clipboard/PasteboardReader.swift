@@ -6,17 +6,23 @@ import ImageIO
 import UniformTypeIdentifiers
 
 /// 从 `NSPasteboard` 抽出一条可入库的内容。
+///
+/// 一条快照带多份表示：文本/富文本/HTML/文件/颜色各一份，图片只留保真度最高的那份。
 public struct PasteboardSnapshot: Sendable {
     public let kind: ClipKind
     public let contentHash: String
     /// 落库并用于搜索的文本（图片/文件是摘要，不是二进制）
     public let text: String
-    public let pngData: Data?
+    /// 图片原始字节（TIFF/BMP 已转成 PNG，扩展名见 `imageExt`）
+    public let imageData: Data?
+    public let imageExt: String?
     public let pixelWidth: Int?
     public let pixelHeight: Int?
     public let byteSize: Int
     /// 文件类内容用换行分隔的完整路径；其他为 nil
     public let filePaths: String?
+    /// 全部原始表示。图片那一条 `value` 有值、`blobPath` 为空，由 store 落 blob。
+    public let contents: [ClipContent]
 }
 
 public enum PasteboardReader {
@@ -58,83 +64,188 @@ public enum PasteboardReader {
 
     /// 返回 nil 表示这条不该入库（机密、空内容、读不出）。
     public static func read(_ pasteboard: NSPasteboard, sourceApp: String?) -> PasteboardSnapshot? {
-        let types = (pasteboard.types ?? []).map(\.rawValue)
-        guard !isSecret(types: types) else { return nil }
+        let allTypes = (pasteboard.types ?? []).map(\.rawValue)
+        guard !isSecret(types: allTypes) else { return nil }
 
-        // 1. 文件（Finder 复制时同时有 file-url 和字符串，必须先判）
-        if types.contains(NSPasteboard.PasteboardType.fileURL.rawValue),
-           let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [
-               .urlReadingFileURLsOnly: true,
-           ]) as? [URL],
-           !urls.isEmpty {
-            let paths = urls.map(\.path)
-            let joined = paths.joined(separator: "\n")
-            let hash = sha256("f:" + joined)
-            let names = paths.map { ($0 as NSString).lastPathComponent }.joined(separator: ", ")
+        let items = pasteboard.pasteboardItems ?? []
+        // 没有 pasteboardItem（某些旧式写入）时退化成整块读
+        let typeGroups: [[NSPasteboard.PasteboardType]] = items.isEmpty
+            ? [allTypes.map { NSPasteboard.PasteboardType($0) }]
+            : items.map(\.types)
+
+        // 1. 文件：Finder 复制会同时带路径字符串和图标 TIFF，必须先判、并且不再收图标
+        var fileContents: [ClipContent] = []
+        var filePaths: [String] = []
+        let fileData: [Data] = items.isEmpty
+            ? [pasteboard.data(forType: .fileURL)].compactMap { $0 }
+            : items.flatMap { item in
+                item.types.filter { $0 == .fileURL }.compactMap { item.data(forType: $0) }
+            }
+        for data in fileData {
+            guard let url = URL(dataRepresentation: data, relativeTo: nil, isAbsolute: true) else { continue }
+            fileContents.append(ClipContent(type: ClipType.fileURL, value: data))
+            filePaths.append(url.path)
+        }
+        if !fileContents.isEmpty {
+            let joined = filePaths.joined(separator: "\n")
+            let names = filePaths.map { ($0 as NSString).lastPathComponent }.joined(separator: ", ")
+            let contents = fileContents + textualContents(typeGroups, pasteboard: pasteboard, excluding: [.fileURL])
             return PasteboardSnapshot(
                 kind: .file,
-                contentHash: hash,
+                contentHash: hash(of: contents),
                 text: names,
-                pngData: nil,
+                imageData: nil,
+                imageExt: nil,
                 pixelWidth: nil,
                 pixelHeight: nil,
                 byteSize: joined.utf8.count,
-                filePaths: joined
+                filePaths: joined,
+                contents: contents
             )
         }
 
-        // 2. 图片：优先 PNG，退化到 TIFF；统一重编码成 PNG 以稳定去重
-        if let data = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff),
-           let decoded = decodeImage(data) {
-            let hash = sha256(decoded.png)
+        // 2. 图片：按保真度挑一份。已是压缩格式的原样存，TIFF/BMP 重编码成 PNG（通常小很多）
+        if let picked = pickImage(typeGroups, pasteboard: pasteboard) {
+            let contents = [ClipContent(type: picked.type, value: picked.data)]
             return PasteboardSnapshot(
                 kind: .image,
-                contentHash: hash,
-                text: "图片 \(decoded.width)×\(decoded.height)",
-                pngData: decoded.png,
-                pixelWidth: decoded.width,
-                pixelHeight: decoded.height,
-                byteSize: decoded.png.count,
-                filePaths: nil
+                contentHash: sha256(picked.data),
+                text: "图片 \(picked.width)×\(picked.height)",
+                imageData: picked.data,
+                imageExt: picked.ext,
+                pixelWidth: picked.width,
+                pixelHeight: picked.height,
+                byteSize: picked.data.count,
+                filePaths: nil,
+                contents: contents
             )
         }
 
         // 3. 颜色（在文本之前，NSColor 也会带字符串表示）
-        if types.contains(NSPasteboard.PasteboardType.color.rawValue),
+        if allTypes.contains(NSPasteboard.PasteboardType.color.rawValue),
            let color = pasteboard.readObjects(forClasses: [NSColor.self], options: nil)?.first as? NSColor,
            let hex = rgbHex(color) {
             return PasteboardSnapshot(
                 kind: .color,
                 contentHash: sha256("c:" + hex),
                 text: hex,
-                pngData: nil,
+                imageData: nil,
+                imageExt: nil,
                 pixelWidth: nil,
                 pixelHeight: nil,
                 byteSize: hex.utf8.count,
-                filePaths: nil
+                filePaths: nil,
+                contents: [ClipContent(type: ClipType.string, value: Data(hex.utf8))]
             )
         }
 
-        // 4. 纯文本
-        if let string = pasteboard.string(forType: .string) {
-            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return nil }
-            return PasteboardSnapshot(
-                kind: .text,
-                contentHash: sha256("t:" + string),
-                text: string,
-                pngData: nil,
-                pixelWidth: nil,
-                pixelHeight: nil,
-                byteSize: string.utf8.count,
-                filePaths: nil
-            )
+        // 4. 文本：所有能持久化的文本类表示都留
+        let contents = textualContents(typeGroups, pasteboard: pasteboard, excluding: [])
+        guard let preview = previewText(contents),
+              !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
         }
+        let totalBytes = contents.reduce(0) { $0 + ($1.value?.count ?? 0) }
+        return PasteboardSnapshot(
+            kind: .text,
+            contentHash: hash(of: contents),
+            text: preview,
+            imageData: nil,
+            imageExt: nil,
+            pixelWidth: nil,
+            pixelHeight: nil,
+            byteSize: totalBytes,
+            filePaths: nil,
+            contents: contents
+        )
+    }
 
+    // MARK: - 类型采集
+
+    private struct PickedImage {
+        let type: String
+        let ext: String
+        let data: Data
+        let width: Int
+        let height: Int
+    }
+
+    private static func pickImage(_ groups: [[NSPasteboard.PasteboardType]],
+                                  pasteboard: NSPasteboard) -> PickedImage? {
+        for candidate in ClipType.imageCandidates {
+            let type = NSPasteboard.PasteboardType(candidate.type)
+            guard groups.contains(where: { $0.contains(type) }) else { continue }
+            guard let raw = data(of: type, in: pasteboard), let decoded = decode(raw) else { continue }
+            // TIFF / BMP 无损重编码成 PNG；其余（PNG/JPEG/HEIC/GIF/WebP）保持原字节
+            let needsTranscode = candidate.ext == "tiff" || candidate.ext == "bmp"
+            if needsTranscode || raw.count > ClipType.maxContentBytes {
+                guard let png = encodePNG(decoded.image) else { continue }
+                return PickedImage(type: "public.png", ext: "png", data: png,
+                                   width: decoded.width, height: decoded.height)
+            }
+            return PickedImage(type: candidate.type, ext: candidate.ext, data: raw,
+                               width: decoded.width, height: decoded.height)
+        }
+        return nil
+    }
+
+    /// 文本类表示（string / rtf / html 等），按类型去重，跳过图片与文件。
+    private static func textualContents(_ groups: [[NSPasteboard.PasteboardType]],
+                                        pasteboard: NSPasteboard,
+                                        excluding excluded: [NSPasteboard.PasteboardType]) -> [ClipContent] {
+        var contents: [ClipContent] = []
+        var seen = Set<String>()
+        for group in groups {
+            for type in group {
+                let raw = type.rawValue
+                if excluded.contains(type) { continue }
+                guard ClipType.isPersistable(raw), !ClipType.isImage(raw), type != .color else { continue }
+                guard !seen.contains(raw) else { continue }
+                seen.insert(raw)
+                guard let data = pasteboard.data(forType: type), !data.isEmpty,
+                      data.count <= ClipType.maxContentBytes else { continue }
+                contents.append(ClipContent(type: raw, value: data))
+            }
+        }
+        return contents
+    }
+
+    /// 预览文本：优先 string，其次从 RTF/HTML 里抽纯文本。
+    private static func previewText(_ contents: [ClipContent]) -> String? {
+        if let text = contents.first(where: { $0.type == ClipType.string })?.value
+            .flatMap({ String(data: $0, encoding: .utf8) }) {
+            return text
+        }
+        if let rtf = contents.first(where: { $0.type == ClipType.rtf })?.value,
+           let attributed = NSAttributedString(rtf: rtf, documentAttributes: nil) {
+            return attributed.string
+        }
+        if let html = contents.first(where: { $0.type == ClipType.html })?.value,
+           let attributed = NSAttributedString(html: html, documentAttributes: nil) {
+            return attributed.string
+        }
         return nil
     }
 
     // MARK: - 辅助
+
+    private static func data(of type: NSPasteboard.PasteboardType, in pasteboard: NSPasteboard) -> Data? {
+        if let data = pasteboard.data(forType: type), !data.isEmpty { return data }
+        // 多 item 剪贴板整块读有时拿不到，退回到逐 item 找
+        for item in pasteboard.pasteboardItems ?? [] where item.types.contains(type) {
+            if let data = item.data(forType: type), !data.isEmpty { return data }
+        }
+        return nil
+    }
+
+    /// 内容指纹：把每份表示的类型和字节都算进去，顺序无关。
+    static func hash(of contents: [ClipContent]) -> String {
+        let canonical = contents
+            .map { "\($0.type):\(sha256($0.value ?? Data()))" }
+            .sorted()
+            .joined(separator: "|")
+        return sha256(Data(canonical.utf8))
+    }
 
     static func sha256(_ string: String) -> String {
         sha256(Data(string.utf8))
@@ -145,25 +256,25 @@ public enum PasteboardReader {
     }
 
     private struct DecodedImage {
-        let png: Data
+        let image: CGImage
         let width: Int
         let height: Int
     }
 
-    /// 解出 CGImage 并重新编码 PNG——同一张图从不同 App 复制可能给不同的 TIFF 头，
-    /// 用原始字节做 hash 会重复入库。
-    private static func decodeImage(_ data: Data) -> DecodedImage? {
+    private static func decode(_ data: Data) -> DecodedImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        return DecodedImage(image: image, width: image.width, height: image.height)
+    }
 
-        let png = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(png, UTType.png.identifier as CFString, 1, nil) else {
+    static func encodePNG(_ image: CGImage) -> Data? {
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
             return nil
         }
-        CGImageDestinationAddImage(dest, cgImage, nil)
+        CGImageDestinationAddImage(dest, image, nil)
         guard CGImageDestinationFinalize(dest) else { return nil }
-
-        return DecodedImage(png: png as Data, width: cgImage.width, height: cgImage.height)
+        return data as Data
     }
 
     /// 统一输出 sRGB hex；P3 原值另有需要时再扩展。

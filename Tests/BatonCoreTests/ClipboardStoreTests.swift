@@ -14,8 +14,8 @@ final class ClipboardStoreTests: XCTestCase {
         if let directory { try? FileManager.default.removeItem(at: directory) }
     }
 
-    private func makeStore(maxItems: Int = 800) throws -> ClipboardStore {
-        try ClipboardStore(directory: directory, maxItems: maxItems)
+    private func makeStore(maxItems: Int? = nil, maxBytes: Int? = nil) throws -> ClipboardStore {
+        try ClipboardStore(directory: directory, maxItems: maxItems, maxBytes: maxBytes)
     }
 
     func testInsertAndDeduplicate() throws {
@@ -149,6 +149,75 @@ final class ClipboardStoreTests: XCTestCase {
 
         XCTAssertEqual(try store.deleteAllUnpinned(), 1)
         XCTAssertTrue(try store.search("剪贴板").isEmpty)
+    }
+
+    func testInsertKeepsEveryRepresentation() throws {
+        let store = try makeStore()
+        let contents = [
+            ClipContent(type: ClipType.string, value: Data("加粗".utf8)),
+            ClipContent(type: ClipType.html, value: Data("<b>加粗</b>".utf8)),
+            ClipContent(type: ClipType.rtf, value: Data("{\\rtf1 加粗}".utf8)),
+        ]
+        let result = try store.insert(ClipDraft(kind: .text, contentHash: "rich", text: "加粗",
+                                                byteSize: 12, contents: contents))
+
+        let stored = try store.contents(for: result.item.id)
+        XCTAssertEqual(stored.map(\.type), [ClipType.string, ClipType.html, ClipType.rtf],
+                       "顺序也要保住，回写时按录入顺序还原")
+        XCTAssertEqual(stored.first?.value, Data("加粗".utf8))
+    }
+
+    func testImageKeepsOriginalExtension() throws {
+        let store = try makeStore()
+        let jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0])
+        let result = try store.insert(ClipDraft(
+            kind: .image,
+            contentHash: "jpghash",
+            text: "图片 1×1",
+            imageExt: "jpg",
+            pixelWidth: 1,
+            pixelHeight: 1,
+            byteSize: jpeg.count,
+            contents: [ClipContent(type: "public.jpeg", value: jpeg)]
+        ))
+
+        let path = try XCTUnwrap(result.item.blobPath)
+        XCTAssertTrue(path.hasSuffix(".jpg"), "JPEG 不该被写成 .png")
+        let stored = try store.contents(for: result.item.id)
+        XCTAssertEqual(stored.first?.type, "public.jpeg")
+        XCTAssertEqual(stored.first?.blobPath, path)
+    }
+
+    func testByteCapTrimsOldest() throws {
+        let store = try makeStore(maxItems: 100, maxBytes: 100)
+        _ = try store.insert(ClipDraft(kind: .text, contentHash: "t1", text: "1", byteSize: 60), now: 1)
+        _ = try store.insert(ClipDraft(kind: .text, contentHash: "t2", text: "2", byteSize: 60), now: 2)
+        _ = try store.insert(ClipDraft(kind: .text, contentHash: "t3", text: "3", byteSize: 60), now: 3)
+
+        XCTAssertEqual(try store.trim(), 2, "超出 100 字节要删到装得下")
+        XCTAssertEqual(try store.recent().map(\.text), ["3"])
+        XCTAssertLessThanOrEqual(try store.usage().bytes, 100)
+    }
+
+    func testSearchFiltersByKind() throws {
+        let store = try makeStore()
+        _ = try store.insert(ClipDraft(kind: .text, contentHash: "t", text: "报告", byteSize: 6))
+        _ = try store.insert(ClipDraft(kind: .image, contentHash: "i", text: "报告 图", byteSize: 6,
+                                       contents: [ClipContent(type: "public.png",
+                                                              value: Data([0x89, 0x50]))]))
+
+        XCTAssertEqual(try store.search("报告").count, 2)
+        XCTAssertEqual(try store.search("报告", kind: .image).map(\.kind), [ClipKind.image.rawValue])
+        XCTAssertEqual(try store.search("", kind: .text).count, 1, "空关键词 + 筛选也要生效")
+    }
+
+    func testSearchHitsCarryHighlightRanges() throws {
+        let store = try makeStore()
+        _ = try store.insert(ClipDraft(kind: .text, contentHash: "a", text: "剪贴板 剪贴", byteSize: 10))
+
+        let hits = try store.searchHits("剪贴")
+        XCTAssertEqual(hits.count, 1)
+        XCTAssertEqual(hits.first?.ranges.count, 2)
     }
 }
 

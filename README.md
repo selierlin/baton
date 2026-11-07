@@ -3,7 +3,7 @@
 macOS 常驻工具（剪贴板 / 输入法 / 平滑滚动 / 截图 / OCR / 翻译 / 贴图），纯自用。
 方案见 vault：`编程｜program/MacOS/Baton/Baton-方案设计-v2.1.md`。
 
-当前进度：**P1–P7 全部完成**。208 个单测通过，`dist/Baton.app` 可直接日常使用。
+当前进度：**P1–P7 全部完成**。323 个单测通过，`dist/Baton.app` 可直接日常使用。
 
 | 模块 | 状态 |
 |---|---|
@@ -46,7 +46,7 @@ Sources/BatonApp          App 入口（含 --stitch / --ocr / --scroll-* / --pre
 Sources/BatonOCR          OCR 子进程（空闲 20 s 自退）
 Sources/BatonProbe        冒烟探针（CLI）
 Scripts/make-app.sh       打包成 dist/Baton.app
-Tests/BatonCoreTests      226 个单测
+Tests/BatonCoreTests      323 个单测
 ```
 
 ## 四个接口的边界
@@ -215,11 +215,16 @@ ad-hoc 签名每次重建 cdhash 都变，TCC 授权会静默失效（界面勾�
 
 启动后按 **⇧⌘V**（或菜单栏 → 剪贴板历史）：
 
-- `↑↓` 选择，`↵` 复制并关闭，`⌘↵` 复制并粘贴到前台 App，`⎋` 关闭
-- 搜索框支持中文两字词（FTS5 trigram 对 <3 字符无效，已降级 LIKE）
+- `↑↓` 选择，`↵` 复制并关闭，`⌘↵` 复制并粘贴到前台 App，`⌥↵` 只粘纯文本，`⌫` 删除，`⌘1-9` 直选，`⎋` 关闭
+- 搜索框支持中文两字词（FTS5 trigram 对 <3 字符无效，已降级 LIKE）；命中词在列表里加底色
+- 类型筛选：全部 / 文字 / 图片 / 文件 / 颜色；底部预览区显示全文、大图、路径或色块
+- **保留富文本**：一条记录存下 pasteboard 的全部可持久化类型（string / rtf / html / file-url），
+  粘回 Word、网页时格式不丢；`⌥↵` 才降级成纯文本
+- **图片存原始格式**：PNG/JPEG/HEIC/GIF/WebP 按原字节入库（GIF 保动画）；只有 TIFF/BMP 重编码成 PNG
+- **图片 OCR 标题**：入库后用 Vision 识别前两行当标题，图里的字也能搜到（设置 → 历史可关）
 - 库文件：`~/Library/Application Support/Baton/baton.sqlite`，图片在 `blobs/`
 - 机密类型（`ConcealedType` / `TransientType` / 密码管理器标记）一律不落库
-- 上限 800 条；裁剪跳过被钉住的条目；blob 用孤儿 GC 回收
+- 上限默认 800 条 / 500 MB（设置 → 历史可调）；裁剪跳过被钉住的条目；blob 用孤儿 GC 回收
 
 冒烟：`dist/Baton.app/Contents/MacOS/Baton --clip-panel`（1 秒后自动退出）
 

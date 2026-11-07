@@ -163,7 +163,7 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
             ("翻译", "character.book.closed", translate, 470),
             ("OCR", "text.viewfinder", ocr, 360),
             ("热键", "command", hotkey, 640),
-            ("历史", "clock.arrow.circlepath", history, 250),
+            ("历史", "clock.arrow.circlepath", history, 420),
         ]
         if let rulerSettings {
             let ruler = RulerSettingsPage(store: rulerSettings)

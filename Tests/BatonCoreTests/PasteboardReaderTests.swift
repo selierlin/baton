@@ -31,7 +31,7 @@ final class PasteboardReaderTests: XCTestCase {
         XCTAssertNil(PasteboardReader.read(pasteboard, sourceApp: nil))
     }
 
-    func testReadsImageAndNormalizesToPNG() throws {
+    func testReadsImageAndConvertsTIFFToPNG() throws {
         pasteboard.clearContents()
         let image = Self.makeImage(width: 40, height: 20)
         pasteboard.writeObjects([image])
@@ -42,8 +42,50 @@ final class PasteboardReaderTests: XCTestCase {
         XCTAssertEqual(snapshot.pixelHeight, 20)
         XCTAssertEqual(snapshot.text, "图片 40×20")
 
-        let png = try XCTUnwrap(snapshot.pngData)
-        XCTAssertEqual(Array(png.prefix(4)), [0x89, 0x50, 0x4E, 0x47], "应重编码为 PNG")
+        let png = try XCTUnwrap(snapshot.imageData)
+        XCTAssertEqual(Array(png.prefix(4)), [0x89, 0x50, 0x4E, 0x47], "TIFF 应转成 PNG")
+        XCTAssertEqual(snapshot.imageExt, "png")
+        XCTAssertEqual(snapshot.contents.count, 1)
+        XCTAssertEqual(snapshot.contents.first?.type, "public.png")
+    }
+
+    /// 已经是 PNG 的图不能重编码：字节变了就等于换了张图，GIF 还会丢动画。
+    func testPNGIsStoredByteIdentical() throws {
+        let png = try Self.pngData(width: 12, height: 8)
+        pasteboard.clearContents()
+        pasteboard.setData(png, forType: .png)
+
+        let snapshot = try XCTUnwrap(PasteboardReader.read(pasteboard, sourceApp: nil))
+        XCTAssertEqual(snapshot.imageData, png)
+        XCTAssertEqual(snapshot.imageExt, "png")
+    }
+
+    func testKeepsRichTextRepresentations() throws {
+        pasteboard.clearContents()
+        let html = "<b>加粗</b>"
+        pasteboard.setString(html, forType: .html)
+        pasteboard.setString("加粗", forType: .string)
+
+        let snapshot = try XCTUnwrap(PasteboardReader.read(pasteboard, sourceApp: nil))
+        XCTAssertEqual(snapshot.kind, .text)
+        XCTAssertEqual(snapshot.text, "加粗")
+        XCTAssertEqual(Set(snapshot.contents.map(\.type)), ["public.html", "public.utf8-plain-text"],
+                       "富文本和纯文本都要留下")
+    }
+
+    func testFinderFilesSkipIconImages() throws {
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("clip-\(UUID().uuidString).txt")
+        try "x".write(to: fileURL, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        pasteboard.clearContents()
+        pasteboard.writeObjects([fileURL as NSURL])
+
+        let snapshot = try XCTUnwrap(PasteboardReader.read(pasteboard, sourceApp: nil))
+        XCTAssertEqual(snapshot.kind, .file)
+        XCTAssertEqual(snapshot.filePaths, fileURL.path)
+        XCTAssertEqual(snapshot.contents.first?.type, "public.file-url")
+        XCTAssertFalse(snapshot.contents.contains { $0.type == "public.tiff" })
     }
 
     func testSameContentHasSameHash() throws {
@@ -56,6 +98,12 @@ final class PasteboardReaderTests: XCTestCase {
         let second = try XCTUnwrap(PasteboardReader.read(pasteboard, sourceApp: nil))
 
         XCTAssertEqual(first.contentHash, second.contentHash)
+    }
+
+    private static func pngData(width: Int, height: Int) throws -> Data {
+        let rep = try XCTUnwrap(makeImage(width: width, height: height)
+            .representations.first as? NSBitmapImageRep)
+        return try XCTUnwrap(rep.representation(using: .png, properties: [:]))
     }
 
     private static func makeImage(width: Int, height: Int) -> NSImage {
