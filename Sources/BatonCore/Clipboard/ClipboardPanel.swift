@@ -27,6 +27,8 @@ public final class ClipboardPanelController: NSObject {
     private let emptyLabel = NSTextField(labelWithString: "")
     private let preview = ClipPreviewView()
     private let previewColumn = NSView()
+    private let listColumn = NSView()
+    private var previewConstraints: [NSLayoutConstraint] = []
     private var previewVisible = false
     private let countLabel = NSTextField(labelWithString: "")
     private let thumbnails = ThumbnailCache()
@@ -68,7 +70,7 @@ public final class ClipboardPanelController: NSObject {
 
     public func show() {
         // 每次打开都收着预览，窗口窄一点，不挡屏幕
-        if previewVisible { setPreviewVisible(false, animated: false) }
+        setPreviewVisible(false, animated: false)
         searchField.stringValue = ""
         filterControl.selectedSegment = 0
         filter = nil
@@ -84,7 +86,7 @@ public final class ClipboardPanelController: NSObject {
 
     public func hide() {
         removeKeyMonitor()
-        if previewVisible { setPreviewVisible(false, animated: false) }
+        setPreviewVisible(false, animated: false)
         saveOrigin()
         panel.orderOut(nil)
     }
@@ -169,31 +171,30 @@ public final class ClipboardPanelController: NSObject {
 
         // 列表与预览分两栏：预览是右侧抽屉，收起时窗口只有 listWidth 宽，
         // 640 的高度全给列表，能看到 16 条左右。
-        let listColumn = NSView()
+        // 抽屉收起时必须把 previewColumn 整个摘掉：isHidden 在 AppKit 里不影响
+        // Auto Layout，隐藏的预览还会撑出最小宽度，窗口收不回 580。
         listColumn.translatesAutoresizingMaskIntoConstraints = false
 
-        let previewColumn = self.previewColumn
         previewColumn.translatesAutoresizingMaskIntoConstraints = false
-        previewColumn.isHidden = true
         previewColumn.addSubview(preview)
 
         for view in [searchField, filterControl, scroll, emptyLabel, separator, countLabel, hint] as [NSView] {
             listColumn.addSubview(view)
         }
         background.addSubview(listColumn)
-        background.addSubview(previewColumn)
         panel.contentView = background
+
+        // 窗口宽度只由 listWidth 决定，提示文字不许反过来撑宽窗口
+        for label in [countLabel, hint] {
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
+        hint.lineBreakMode = .byTruncatingTail
 
         NSLayoutConstraint.activate([
             listColumn.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             listColumn.topAnchor.constraint(equalTo: background.topAnchor),
             listColumn.bottomAnchor.constraint(equalTo: background.bottomAnchor),
             listColumn.widthAnchor.constraint(equalToConstant: Self.listWidth),
-
-            previewColumn.leadingAnchor.constraint(equalTo: listColumn.trailingAnchor),
-            previewColumn.trailingAnchor.constraint(equalTo: background.trailingAnchor),
-            previewColumn.topAnchor.constraint(equalTo: background.topAnchor, constant: 12),
-            previewColumn.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -12),
 
             preview.topAnchor.constraint(equalTo: previewColumn.topAnchor),
             preview.leadingAnchor.constraint(equalTo: previewColumn.leadingAnchor, constant: 8),
@@ -237,10 +238,27 @@ public final class ClipboardPanelController: NSObject {
     }
 
     private func setPreviewVisible(_ visible: Bool, animated: Bool) {
-        guard previewVisible != visible else { return }
+        let changed = previewVisible != visible
         previewVisible = visible
-        previewColumn.isHidden = !visible
 
+        if visible {
+            if previewColumn.superview == nil, let host = listColumn.superview {
+                host.addSubview(previewColumn)
+                previewConstraints = [
+                    previewColumn.leadingAnchor.constraint(equalTo: listColumn.trailingAnchor),
+                    previewColumn.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+                    previewColumn.topAnchor.constraint(equalTo: host.topAnchor, constant: 12),
+                    previewColumn.bottomAnchor.constraint(equalTo: host.bottomAnchor, constant: -12),
+                ]
+                NSLayoutConstraint.activate(previewConstraints)
+            }
+        } else if previewColumn.superview != nil {
+            NSLayoutConstraint.deactivate(previewConstraints)
+            previewConstraints = []
+            previewColumn.removeFromSuperview()
+        }
+
+        // 目标宽度每次都设：窗口可能被内容最小宽度撑大过，收起时要能收回来
         var frame = panel.frame
         let targetWidth = Self.listWidth + (visible ? Self.previewWidth : 0)
         if visible, let screen = panel.screen?.visibleFrame,
@@ -248,7 +266,7 @@ public final class ClipboardPanelController: NSObject {
             frame.origin.x = max(screen.minX, screen.maxX - targetWidth)
         }
         frame.size.width = targetWidth
-        if animated {
+        if animated, changed {
             panel.setFrame(frame, display: true, animate: true)
         } else {
             panel.setFrame(frame, display: true)
