@@ -152,7 +152,7 @@ public final class ClipboardPanelController: NSObject {
         countLabel.textColor = .tertiaryLabelColor
         countLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let hint = NSTextField(labelWithString: "↵ 粘贴   ⌥↵ 纯文本   ⇧↵ 仅复制   ⌫ 删除   ⌘1-9 直选")
+        let hint = NSTextField(labelWithString: "↵ 粘贴   ⌥↵ 纯文本   ⇧↵ 仅复制   ←→ 筛选   ⌫ 删除   ⌘1-9 直选")
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .tertiaryLabelColor
         hint.translatesAutoresizingMaskIntoConstraints = false
@@ -287,12 +287,20 @@ public final class ClipboardPanelController: NSObject {
     }
 
     @objc private func filterChanged() {
-        let kinds: [ClipKind?] = [nil, .text, .image, .file, .color]
-        let index = filterControl.selectedSegment
-        filter = index >= 0 && index < kinds.count ? kinds[index] : nil
+        filter = Self.filterKinds[max(0, min(filterControl.selectedSegment, Self.filterKinds.count - 1))]
         reload(query: searchField.stringValue)
         selectRow(0)
     }
+
+    /// 左右键切换筛选段。到头就停住，不循环——循环容易在两端来回跳。
+    private func stepFilter(_ delta: Int) {
+        let next = filterControl.selectedSegment + delta
+        guard next >= 0, next < Self.filterKinds.count else { return }
+        filterControl.selectedSegment = next
+        filterChanged()
+    }
+
+    private static let filterKinds: [ClipKind?] = [nil, .text, .image, .file, .color]
 
     // MARK: - 键位
 
@@ -334,6 +342,12 @@ public final class ClipboardPanelController: NSObject {
             } else {
                 commit(paste: true, plainText: flags.contains(.option))
             }
+            return true
+        case #selector(NSResponder.moveLeft(_:)),
+             #selector(NSResponder.moveRight(_:)):
+            // 搜索框有字时左右键归光标，空的时候才切类型筛选
+            guard searchField.stringValue.isEmpty else { return false }
+            stepFilter(selector == #selector(NSResponder.moveLeft(_:)) ? -1 : 1)
             return true
         case #selector(NSResponder.deleteBackward(_:)),
              #selector(NSResponder.deleteForward(_:)):
