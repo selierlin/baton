@@ -78,28 +78,72 @@ public enum HotkeyAction: String, CaseIterable, Sendable {
 /// 只存「改过的」那几个：默认值留在代码里，将来改默认值老用户也能拿到。
 public struct HotkeySettings: Codable, Sendable, Equatable {
     public var overrides: [String: KeyCombo]
+    /// 被取消绑定的动作：功能还在菜单里，只是不再占全局快捷键，也不会和谁撞。
+    /// 存 rawValue 而不是 KeyCombo：恢复绑定时要能回到用户改过的那个组合，
+    /// 而不是一声不响变回默认值。
+    public var disabled: Set<String>
 
-    public init(overrides: [String: KeyCombo] = [:]) {
+    public init(overrides: [String: KeyCombo] = [:], disabled: Set<String> = []) {
         self.overrides = overrides
+        self.disabled = disabled
     }
 
     public static let `default` = HotkeySettings()
+
+    // 旧文件只有 overrides 一个键；缺 disabled 要补空集合，不能让整份配置解码失败
+    private enum CodingKeys: String, CodingKey {
+        case overrides, disabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        overrides = try container.decodeIfPresent([String: KeyCombo].self, forKey: .overrides) ?? [:]
+        disabled = try container.decodeIfPresent(Set<String>.self, forKey: .disabled) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(overrides, forKey: .overrides)
+        // 空集合不写，文件里只留真的取消过的那几个
+        if !disabled.isEmpty {
+            try container.encode(disabled, forKey: .disabled)
+        }
+    }
 
     public func combo(for action: HotkeyAction) -> KeyCombo {
         overrides[action.rawValue] ?? action.defaultCombo
     }
 
-    /// 新组合若和别的动作撞了，返回被撞的那个动作。
+    /// 取消绑定过的动作不注册全局热键，也不参与重复/撞系统的校验
+    public func isEnabled(_ action: HotkeyAction) -> Bool {
+        !disabled.contains(action.rawValue)
+    }
+
+    /// 新组合若和别的动作撞了，返回被撞的那个动作。已取消绑定的不算占位。
     public func conflict(of combo: KeyCombo, ignoring action: HotkeyAction) -> HotkeyAction? {
-        HotkeyAction.allCases.first { $0 != action && self.combo(for: $0) == combo }
+        HotkeyAction.allCases.first {
+            $0 != action && isEnabled($0) && self.combo(for: $0) == combo
+        }
     }
 
     public mutating func set(_ combo: KeyCombo?, for action: HotkeyAction) {
+        // 重新设一次就是「我要用它」，顺手解除取消绑定
+        disabled.remove(action.rawValue)
         if let combo, combo != action.defaultCombo {
             overrides[action.rawValue] = combo
         } else {
             overrides.removeValue(forKey: action.rawValue)
         }
+    }
+
+    /// 取消绑定：不注册这个热键，但保留改过的组合，恢复时还用它。
+    public mutating func unbind(_ action: HotkeyAction) {
+        disabled.insert(action.rawValue)
+    }
+
+    /// 恢复绑定（回到取消之前用的那个组合）。
+    public mutating func restore(_ action: HotkeyAction) {
+        disabled.remove(action.rawValue)
     }
 }
 

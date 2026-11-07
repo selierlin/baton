@@ -203,7 +203,7 @@ public final class AppShell: NSObject {
     private func registerHotkeys() {
         hotkeys.unregisterAll()
         let settings = hotkeyStore?.load() ?? .default
-        for action in HotkeyAction.allCases {
+        for action in HotkeyAction.allCases where settings.isEnabled(action) {
             let combo = settings.combo(for: action)
             do {
                 try hotkeys.register(combo) { [weak self] in
@@ -223,9 +223,12 @@ public final class AppShell: NSObject {
         }
         refreshHotkeyMenuItems()
 
-        // 注册成功 ≠ 能收到：自己重复、撞系统符号快捷键都查一遍
+        // 注册成功 ≠ 能收到：自己重复、撞系统符号快捷键都查一遍。
+        // 取消绑定过的不参与——它压根没注册，报「重复」只会误导
         let warnings = HotkeyAudit.warnings(
-            actions: HotkeyAction.allCases.map { ($0.title, settings.combo(for: $0)) }
+            actions: HotkeyAction.allCases
+                .filter { settings.isEnabled($0) }
+                .map { ($0.title, settings.combo(for: $0)) }
         )
         hotkeyWarnings = warnings
         for warning in warnings {
@@ -449,7 +452,12 @@ public final class AppShell: NSObject {
         let settings = hotkeyStore?.load() ?? .default
         for (action, item) in hotkeyMenuItems {
             let combo = settings.combo(for: action)
-            if let key = combo.menuKeyEquivalent {
+            if !settings.isEnabled(action) {
+                // 取消绑定：菜单里这一项还在（功能能用），只是右侧不显示键
+                item.keyEquivalent = ""
+                item.keyEquivalentModifierMask = []
+                item.toolTip = "未设置全局热键"
+            } else if let key = combo.menuKeyEquivalent {
                 item.keyEquivalent = key
                 item.keyEquivalentModifierMask = combo.menuModifierMask
                 item.toolTip = combo.display

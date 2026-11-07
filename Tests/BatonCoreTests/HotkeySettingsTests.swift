@@ -37,6 +37,60 @@ final class HotkeySettingsTests: XCTestCase {
                                        ignoring: .pin))
     }
 
+    /// 取消绑定：不注册、不占位，但改过的组合要留着，恢复时还用它。
+    func testUnbindKeepsCustomComboAndFreesTheKey() {
+        var settings = HotkeySettings.default
+        let custom = KeyCombo(keyCode: UInt32(kVK_ANSI_M), modifiers: UInt32(cmdKey | optionKey))
+        settings.set(custom, for: .ruler)
+
+        settings.unbind(.ruler)
+        XCTAssertFalse(settings.isEnabled(.ruler))
+        XCTAssertEqual(settings.combo(for: .ruler), custom)
+        // 键空出来了，别人可以拿去用
+        XCTAssertNil(settings.conflict(of: custom, ignoring: .pin))
+
+        settings.restore(.ruler)
+        XCTAssertTrue(settings.isEnabled(.ruler))
+        XCTAssertEqual(settings.combo(for: .ruler), custom)
+    }
+
+    /// 取消绑定后又录了一个新组合：视为重新启用。
+    func testSettingComboReenablesAction() {
+        var settings = HotkeySettings.default
+        settings.unbind(.ocr)
+        settings.set(KeyCombo(keyCode: UInt32(kVK_ANSI_O), modifiers: UInt32(controlKey)), for: .ocr)
+        XCTAssertTrue(settings.isEnabled(.ocr))
+    }
+
+    /// 旧文件只有 overrides；加了 disabled 之后不能让整份配置解码失败。
+    func testDecodesFileWithoutDisabledKey() throws {
+        let json = #"{"overrides":{"ruler":{"keyCode":46,"modifiers":1048576}}}"#
+        let settings = try JSONDecoder().decode(HotkeySettings.self, from: Data(json.utf8))
+        XCTAssertTrue(settings.disabled.isEmpty)
+        XCTAssertEqual(settings.combo(for: .ruler).keyCode, 46)
+    }
+
+    /// 没取消过任何键时，文件里不该多出一个空数组。
+    func testEmptyDisabledIsNotWritten() throws {
+        let data = try JSONEncoder().encode(HotkeySettings.default)
+        let text = String(decoding: data, as: UTF8.self)
+        XCTAssertFalse(text.contains("disabled"))
+    }
+
+    func testDisabledRoundTrip() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("baton-hotkeys-\(UUID().uuidString)", isDirectory: true)
+        let store = try HotkeySettingsStore(directory: dir)
+        var settings = HotkeySettings.default
+        settings.unbind(.recordApp)
+        try store.save(settings)
+
+        let reloaded = try HotkeySettingsStore(directory: dir).load()
+        XCTAssertEqual(reloaded.disabled, [HotkeyAction.recordApp.rawValue])
+        XCTAssertFalse(reloaded.isEnabled(.recordApp))
+        try? FileManager.default.removeItem(at: dir)
+    }
+
     func testStoreRoundTrip() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("baton-hotkeys-\(UUID().uuidString)", isDirectory: true)
