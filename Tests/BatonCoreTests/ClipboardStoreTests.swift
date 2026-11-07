@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import XCTest
 @testable import BatonCore
 
@@ -218,6 +219,31 @@ final class ClipboardStoreTests: XCTestCase {
         let hits = try store.searchHits("剪贴")
         XCTAssertEqual(hits.count, 1)
         XCTAssertEqual(hits.first?.ranges.count, 2)
+    }
+
+    /// 带 contents 的条目必须把 FTS 行写在 item 自己的 rowid 上。
+    /// 曾经在 item_content 插完之后才取 lastInsertedRowID，FTS 落到 content 的
+    /// rowid，搜 "7474" 就查不到 "1237474"（被别的命中结果挡住了 LIKE 兜底）。
+    func testFTSRowUsesItemRowID() throws {
+        let store = try makeStore()
+        let item = try store.insert(
+            ClipDraft(kind: .text, contentHash: "fts-rowid", text: "1237474", byteSize: 7,
+                      contents: [ClipContent(type: ClipType.string, value: Data("1237474".utf8))]),
+            now: 100
+        ).item
+
+        let queue = try DatabaseQueue(path: directory.appendingPathComponent("baton.sqlite").path)
+        let missing = try queue.read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM item i
+                WHERE i.text IS NOT NULL AND i.text <> ''
+                  AND NOT EXISTS (SELECT 1 FROM item_fts f WHERE f.rowid = i.rowid)
+                """) ?? -1
+        }
+        XCTAssertEqual(missing, 0, "有文本的 item 都要有同 rowid 的 FTS 行")
+
+        // 4 字符走 FTS 分支，必须直接命中，不能靠 LIKE 兜底
+        XCTAssertEqual(try store.search("7474").map(\.id), [item.id])
     }
 }
 

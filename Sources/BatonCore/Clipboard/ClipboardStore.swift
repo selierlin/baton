@@ -188,6 +188,9 @@ public final class ClipboardStore: Sendable {
                 meta: draft.meta
             )
             try item.insert(conn)
+            // 必须马上取 rowid：后面插 item_content 会把 lastInsertedRowID 顶掉，
+            // FTS 就写到 item_content 的 rowid 上了，搜索自然命不中。
+            let itemRowID = conn.lastInsertedRowID
 
             for (index, content) in resolved.enumerated() {
                 try conn.execute(sql: """
@@ -196,7 +199,7 @@ public final class ClipboardStore: Sendable {
                     """, arguments: [item.id, content.type, index, content.value, content.blobPath])
             }
 
-            try Self.indexFTS(conn, rowid: conn.lastInsertedRowID, text: item.text)
+            try Self.indexFTS(conn, rowid: itemRowID, text: item.text)
             return ClipInsertResult(item: item, deduplicated: false)
         }
     }
