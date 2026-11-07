@@ -472,12 +472,23 @@ private final class ClipRowCell: NSTableCellView {
         let cut = String(singleLine.prefix(300))
         let attributed = NSMutableAttributedString(string: cut, attributes: [
             .font: NSFont.systemFont(ofSize: 13),
+            .foregroundColor: NSColor.labelColor,
         ])
-        // 命中的词加底色，比只截断更容易扫到
-        for range in ranges where range.upperBound <= cut.endIndex {
-            attributed.addAttribute(.backgroundColor,
-                                    value: NSColor.findHighlightColor,
-                                    range: NSRange(range, in: cut))
+        // 命中的词加底色，比只截断更容易扫到。
+        // 底色是固定亮黄，深色模式下 labelColor 是白的，黄底白字几乎看不见，
+        // 所以高亮区间必须显式压成黑字。
+        // ranges 基于原文，展示串去掉了换行又截断过，索引不能直接复用，
+        // 只取命中的词在展示串里重新定位。
+        let keywords = Set(ranges.map { String(raw[$0]) }.filter { !$0.isEmpty })
+        for keyword in keywords {
+            var start = cut.startIndex
+            while let found = cut.range(of: keyword, options: .caseInsensitive, range: start..<cut.endIndex) {
+                attributed.addAttributes([
+                    .backgroundColor: NSColor.findHighlightColor,
+                    .foregroundColor: NSColor.black,
+                ], range: NSRange(found, in: cut))
+                start = found.upperBound
+            }
         }
         return attributed
     }
