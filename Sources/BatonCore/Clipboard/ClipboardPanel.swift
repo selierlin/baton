@@ -8,6 +8,8 @@ import Foundation
 public final class ClipboardPanelController: NSObject {
     /// (条目, 是否直接粘贴到前台, 是否只粘纯文本)
     public var onCommit: ((ClipItem, Bool, Bool) -> Void)?
+    /// 多选后回车：把这批条目做成粘贴栈，逐条粘
+    public var onCommitStack: (([ClipItem]) -> Void)?
 
     private let store: ClipboardStore
     private var items: [ClipHit] = []
@@ -24,19 +26,23 @@ public final class ClipboardPanelController: NSObject {
     private let tableView = NSTableView()
     private let emptyLabel = NSTextField(labelWithString: "")
     private let preview = ClipPreviewView()
+    private let previewColumn = NSView()
+    private var previewVisible = false
     private let countLabel = NSTextField(labelWithString: "")
     private let thumbnails = ThumbnailCache()
     private var keyMonitor: Any?
 
-    private static let panelSize = NSSize(width: 580, height: 640)
+    private static let listWidth: CGFloat = 580
+    private static let previewWidth: CGFloat = 360
+    private static let panelHeight: CGFloat = 640
     private static let rowHeight: CGFloat = 32
-    private static let previewHeight: CGFloat = 168
     private static let frameKey = "clipboard.panelOrigin"
 
     public init(store: ClipboardStore) {
         self.store = store
         panel = KeyablePanel(
-            contentRect: NSRect(origin: .zero, size: Self.panelSize),
+            contentRect: NSRect(origin: .zero,
+                                size: NSSize(width: Self.listWidth, height: Self.panelHeight)),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -61,6 +67,8 @@ public final class ClipboardPanelController: NSObject {
     public var isVisible: Bool { panel.isVisible }
 
     public func show() {
+        // 每次打开都收着预览，窗口窄一点，不挡屏幕
+        if previewVisible { setPreviewVisible(false, animated: false) }
         searchField.stringValue = ""
         filterControl.selectedSegment = 0
         filter = nil
@@ -75,8 +83,9 @@ public final class ClipboardPanelController: NSObject {
     }
 
     public func hide() {
-        saveOrigin()
         removeKeyMonitor()
+        if previewVisible { setPreviewVisible(false, animated: false) }
+        saveOrigin()
         panel.orderOut(nil)
     }
 
@@ -126,6 +135,7 @@ public final class ClipboardPanelController: NSObject {
         tableView.intercellSpacing = NSSize(width: 0, height: 2)
         tableView.backgroundColor = .clear
         tableView.selectionHighlightStyle = .regular
+        tableView.allowsMultipleSelection = true
         tableView.dataSource = self
         tableView.delegate = self
         tableView.target = self
@@ -152,49 +162,97 @@ public final class ClipboardPanelController: NSObject {
         countLabel.textColor = .tertiaryLabelColor
         countLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let hint = NSTextField(labelWithString: "↵ 粘贴   ⌥↵ 纯文本   ⇧↵ 仅复制   ←→ 筛选   ⌫ 删除   ⌘1-9 直选")
+        let hint = NSTextField(labelWithString: "↵ 粘贴 · ⌥↵ 纯文本 · ⇧↵ 复制 · ←→ 筛选 · Tab 预览 · ⌘多选连粘")
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .tertiaryLabelColor
         hint.translatesAutoresizingMaskIntoConstraints = false
 
-        for view in [searchField, filterControl, scroll, emptyLabel, separator, preview, countLabel, hint] as [NSView] {
-            background.addSubview(view)
+        // 列表与预览分两栏：预览是右侧抽屉，收起时窗口只有 listWidth 宽，
+        // 640 的高度全给列表，能看到 16 条左右。
+        let listColumn = NSView()
+        listColumn.translatesAutoresizingMaskIntoConstraints = false
+
+        let previewColumn = self.previewColumn
+        previewColumn.translatesAutoresizingMaskIntoConstraints = false
+        previewColumn.isHidden = true
+        previewColumn.addSubview(preview)
+
+        for view in [searchField, filterControl, scroll, emptyLabel, separator, countLabel, hint] as [NSView] {
+            listColumn.addSubview(view)
         }
+        background.addSubview(listColumn)
+        background.addSubview(previewColumn)
         panel.contentView = background
 
         NSLayoutConstraint.activate([
-            searchField.topAnchor.constraint(equalTo: background.topAnchor, constant: 12),
-            searchField.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 12),
-            searchField.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -12),
+            listColumn.leadingAnchor.constraint(equalTo: background.leadingAnchor),
+            listColumn.topAnchor.constraint(equalTo: background.topAnchor),
+            listColumn.bottomAnchor.constraint(equalTo: background.bottomAnchor),
+            listColumn.widthAnchor.constraint(equalToConstant: Self.listWidth),
+
+            previewColumn.leadingAnchor.constraint(equalTo: listColumn.trailingAnchor),
+            previewColumn.trailingAnchor.constraint(equalTo: background.trailingAnchor),
+            previewColumn.topAnchor.constraint(equalTo: background.topAnchor, constant: 12),
+            previewColumn.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -12),
+
+            preview.topAnchor.constraint(equalTo: previewColumn.topAnchor),
+            preview.leadingAnchor.constraint(equalTo: previewColumn.leadingAnchor, constant: 8),
+            preview.trailingAnchor.constraint(equalTo: previewColumn.trailingAnchor, constant: -12),
+            preview.bottomAnchor.constraint(equalTo: previewColumn.bottomAnchor),
+
+            searchField.topAnchor.constraint(equalTo: listColumn.topAnchor, constant: 12),
+            searchField.leadingAnchor.constraint(equalTo: listColumn.leadingAnchor, constant: 12),
+            searchField.trailingAnchor.constraint(equalTo: listColumn.trailingAnchor, constant: -12),
 
             filterControl.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
             filterControl.leadingAnchor.constraint(equalTo: searchField.leadingAnchor),
             filterControl.trailingAnchor.constraint(lessThanOrEqualTo: searchField.trailingAnchor),
 
             scroll.topAnchor.constraint(equalTo: filterControl.bottomAnchor, constant: 8),
-            scroll.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 6),
-            scroll.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -6),
+            scroll.leadingAnchor.constraint(equalTo: listColumn.leadingAnchor, constant: 6),
+            scroll.trailingAnchor.constraint(equalTo: listColumn.trailingAnchor, constant: -6),
             scroll.bottomAnchor.constraint(equalTo: separator.topAnchor, constant: -6),
 
             emptyLabel.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
 
-            separator.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 12),
-            separator.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -12),
+            separator.leadingAnchor.constraint(equalTo: listColumn.leadingAnchor, constant: 12),
+            separator.trailingAnchor.constraint(equalTo: listColumn.trailingAnchor, constant: -12),
             separator.heightAnchor.constraint(equalToConstant: 1),
-            separator.bottomAnchor.constraint(equalTo: preview.topAnchor, constant: -8),
+            separator.bottomAnchor.constraint(equalTo: hint.topAnchor, constant: -8),
 
-            preview.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 12),
-            preview.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -12),
-            preview.heightAnchor.constraint(equalToConstant: Self.previewHeight),
-            preview.bottomAnchor.constraint(equalTo: hint.topAnchor, constant: -6),
-
-            countLabel.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 14),
+            countLabel.leadingAnchor.constraint(equalTo: listColumn.leadingAnchor, constant: 14),
             countLabel.centerYAnchor.constraint(equalTo: hint.centerYAnchor),
 
-            hint.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -14),
-            hint.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -8),
+            hint.trailingAnchor.constraint(equalTo: listColumn.trailingAnchor, constant: -14),
+            hint.bottomAnchor.constraint(equalTo: listColumn.bottomAnchor, constant: -8),
         ])
+    }
+
+    // MARK: - 预览抽屉
+
+    /// 展开/收起右侧预览。窗口向右长，左边不动；右边顶到屏幕就往左长。
+    func togglePreview() {
+        setPreviewVisible(!previewVisible, animated: true)
+    }
+
+    private func setPreviewVisible(_ visible: Bool, animated: Bool) {
+        guard previewVisible != visible else { return }
+        previewVisible = visible
+        previewColumn.isHidden = !visible
+
+        var frame = panel.frame
+        let targetWidth = Self.listWidth + (visible ? Self.previewWidth : 0)
+        if visible, let screen = panel.screen?.visibleFrame,
+           frame.minX + targetWidth > screen.maxX {
+            frame.origin.x = max(screen.minX, screen.maxX - targetWidth)
+        }
+        frame.size.width = targetWidth
+        if animated {
+            panel.setFrame(frame, display: true, animate: true)
+        } else {
+            panel.setFrame(frame, display: true)
+        }
     }
 
     private func positionPanel() {
@@ -210,8 +268,8 @@ public final class ClipboardPanelController: NSObject {
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
         guard let visible = screen?.visibleFrame else { return }
         panel.setFrameOrigin(NSPoint(
-            x: visible.midX - Self.panelSize.width / 2,
-            y: visible.maxY - Self.panelSize.height - 80
+            x: visible.midX - Self.listWidth / 2,
+            y: visible.maxY - Self.panelHeight - 80
         ))
     }
 
@@ -261,9 +319,41 @@ public final class ClipboardPanelController: NSObject {
         return row >= 0 && row < items.count ? row : nil
     }
 
+    /// ⇧↑↓ 扩/缩选区。多选是粘贴栈的入口，纯键盘也要能用。
+    private func extendSelection(by delta: Int) {
+        guard !items.isEmpty else { return }
+        var set = tableView.selectedRowIndexes
+        guard !set.isEmpty else {
+            selectRow(0)
+            return
+        }
+        if delta > 0 {
+            guard let next = set.max().map({ $0 + 1 }), next < items.count else { return }
+            set.insert(next)
+        } else {
+            guard set.count > 1, let last = set.max() else { return }
+            set.remove(last)
+        }
+        tableView.selectRowIndexes(set, byExtendingSelection: false)
+        if let row = set.max() {
+            tableView.scrollRowToVisible(row)
+            if row < items.count { preview.show(items[row].item, store: store) }
+        }
+    }
+
     // MARK: - 动作
 
     private func commit(paste: Bool, plainText: Bool) {
+        // 多选时回车 = 建粘贴栈：之后每按一次 ⌘V 自动换下一条
+        if tableView.selectedRowIndexes.count > 1 {
+            let picked = tableView.selectedRowIndexes.compactMap { row in
+                row < items.count ? items[row].item : nil
+            }
+            guard picked.count > 1 else { return }
+            hide()
+            onCommitStack?(picked)
+            return
+        }
         guard let index = selectedIndex else { return }
         let item = items[index].item
         hide()
@@ -328,10 +418,30 @@ public final class ClipboardPanelController: NSObject {
     func handle(command selector: Selector) -> Bool {
         switch selector {
         case #selector(NSResponder.moveUp(_:)):
-            selectRow((selectedIndex ?? 0) - 1)
+            if NSEvent.modifierFlags.contains(.shift) {
+                extendSelection(by: -1)
+            } else {
+                selectRow((selectedIndex ?? 0) - 1)
+            }
             return true
         case #selector(NSResponder.moveDown(_:)):
-            selectRow((selectedIndex ?? -1) + 1)
+            if NSEvent.modifierFlags.contains(.shift) {
+                extendSelection(by: 1)
+            } else {
+                selectRow((selectedIndex ?? -1) + 1)
+            }
+            return true
+        // 文本框里 ⇧↑↓ 走的是 *AndModifySelection:，不是 moveUp/moveDown
+        case #selector(NSResponder.moveUpAndModifySelection(_:)):
+            extendSelection(by: -1)
+            return true
+        case #selector(NSResponder.moveDownAndModifySelection(_:)):
+            extendSelection(by: 1)
+            return true
+        case #selector(NSResponder.selectAll(_:)):
+            guard !items.isEmpty else { return true }
+            tableView.selectRowIndexes(IndexSet(integersIn: 0..<items.count), byExtendingSelection: false)
+            if let last = items.last { preview.show(last.item, store: store) }
             return true
         case #selector(NSResponder.insertNewline(_:)):
             let flags = NSEvent.modifierFlags
@@ -348,6 +458,10 @@ public final class ClipboardPanelController: NSObject {
             // 搜索框有字时左右键归光标，空的时候才切类型筛选
             guard searchField.stringValue.isEmpty else { return false }
             stepFilter(selector == #selector(NSResponder.moveLeft(_:)) ? -1 : 1)
+            return true
+        case #selector(NSResponder.insertTab(_:)):
+            // Tab 用来开合右侧预览，比 ⌃Space 稳（那个被输入法占着）
+            togglePreview()
             return true
         case #selector(NSResponder.deleteBackward(_:)),
              #selector(NSResponder.deleteForward(_:)):

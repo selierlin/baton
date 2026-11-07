@@ -23,6 +23,10 @@ public final class ClipboardService {
     private var task: Task<Void, Never>?
     private var previousApp: NSRunningApplication?
     private var ocrTasks: [String: Task<Void, Never>] = [:]
+    /// 粘贴栈：还剩几条等着依次粘
+    private var pasteStack: [ClipItem] = []
+    private var stackMonitor: Any?
+    private var stackPasteDown = false
 
     public init(store: ClipboardStore, hub: EventHub) {
         self.store = store
@@ -36,6 +40,9 @@ public final class ClipboardService {
             let panel = ClipboardPanelController(store: store)
             panel.onCommit = { [weak self] item, paste, plainText in
                 self?.commit(item, paste: paste, plainText: plainText)
+            }
+            panel.onCommitStack = { [weak self] items in
+                self?.startPasteStack(items: items)
             }
             self.panel = panel
         }
@@ -65,6 +72,7 @@ public final class ClipboardService {
 
     public func showHistory() {
         // 面板一出现 Baton 就成了前台，必须提前记住该把焦点还给谁
+        stopPasteStack()
         previousApp = NSWorkspace.shared.frontmostApplication
         NSApp.activate()
         if panel == nil { start() }
@@ -198,6 +206,67 @@ public final class ClipboardService {
             try? await Task.sleep(for: .milliseconds(180))
             Self.synthesizePaste()
         }
+    }
+
+    // MARK: - 粘贴栈
+
+    /// 多选后回车：第一条直接粘到前台，之后每按一次 ⌘V 自动换下一条。
+    ///
+    /// 不能在 keyDown 时换：系统还没来得及把当前剪贴板粘出去。
+    /// 所以监听 keyUp，此时这一条已经落地，再把下一条写进剪贴板等下次 ⌘V。
+    public func startPasteStack(items: [ClipItem]) {
+        guard items.count > 1, let first = items.first else { return }
+        stopPasteStack()
+
+        pasteStack = Array(items.dropFirst())
+        write(first, plainText: false)
+        try? store.touch(id: first.id)
+
+        let pasteKey = KeyboardLayout.keyCode(for: "v")
+        stackMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self, event.keyCode == pasteKey else { return }
+                switch event.type {
+                case .keyDown:
+                    if event.modifierFlags.contains(.command) { self.stackPasteDown = true }
+                case .keyUp:
+                    guard self.stackPasteDown else { return }
+                    self.stackPasteDown = false
+                    // 目标 App 可能是异步处理 ⌘V 的，等它读完剪贴板再换下一条，
+                    // 否则按得太快会粘到已经替换掉的内容。
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+                        self?.advancePasteStack()
+                    }
+                default:
+                    break
+                }
+            }
+        }
+
+        ActionLog.app("clip.stack", "start items=\(items.count)")
+        // 只复制第一条，不替用户按 ⌘V：合成的按键会被自己的全局监听收到，
+        // 一按下就跳到第二条，反而乱套。
+        restoreFocus()
+    }
+
+    private func advancePasteStack() {
+        guard let next = pasteStack.first else {
+            stopPasteStack()
+            return
+        }
+        pasteStack.removeFirst()
+        write(next, plainText: false)
+        try? store.touch(id: next.id)
+        ActionLog.app("clip.stack", "next remaining=\(pasteStack.count)")
+    }
+
+    public func stopPasteStack() {
+        guard stackMonitor != nil || !pasteStack.isEmpty else { return }
+        if let stackMonitor { NSEvent.removeMonitor(stackMonitor) }
+        stackMonitor = nil
+        pasteStack.removeAll()
+        stackPasteDown = false
+        ActionLog.app("clip.stack", "stop")
     }
 
     private func write(_ item: ClipItem, plainText: Bool) {
