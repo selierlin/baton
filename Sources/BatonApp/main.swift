@@ -167,16 +167,16 @@ case "--input-switch":
     exit(0)
 
 case "--browser-focus":
-    // 冒烟：焦点在地址栏 / 网页输入框时各跑一次，确认分类对了
+    // 冒烟：焦点在地址栏 / 网页输入框时各跑一次，确认分类和域名、输入框文案都读到了
     MainActor.assumeIsolated {
         guard let front = NSWorkspace.shared.frontmostApplication else {
             print("没有前台 App")
             exit(1)
         }
-        let focus = BrowserFocusReader.focus(pid: front.processIdentifier)
+        let context = BrowserContextReader.read(pid: front.processIdentifier, needHost: true)
         print("front=\(front.localizedName ?? "-") [\(front.bundleIdentifier ?? "-")] "
-              + "supported=\(BrowserFocusReader.isSupported(front.bundleIdentifier)) "
-              + "focus=\(focus) trusted=\(AXIsProcessTrusted())")
+              + "supported=\(BrowserContextReader.isSupported(front.bundleIdentifier)) "
+              + "kind=\(context.kind) host=\(context.host ?? "-") label=\(context.label ?? "-")")
     }
     exit(0)
 
@@ -1102,17 +1102,6 @@ case "--preview":
             preview.show()
             probePreview = preview
             print("preview shown frame=\(preview.frame)")
-        }
-    }
-    app.run()
-    exit(0)
-
-case "--prefs":
-    shell.start()
-    DispatchQueue.main.async {
-        MainActor.assumeIsolated {
-            let tab = args.count > 1 ? (Int(args[1]) ?? 0) : 0
-            shell.openPreferences(tab: tab)
         }
     }
     app.run()

@@ -9,7 +9,7 @@ private struct SettingsPage {
     var height: CGFloat
 }
 
-/// 偏好设置窗口。六页：通用、测量、翻译、OCR、热键、历史。
+/// 偏好设置窗口。页签：通用、输入法、测量、网页输入法、翻译、OCR、热键、历史（测量可选）。
 ///
 /// 顶部用 `NSToolbar`（`.preference` 样式）切页，而不是 `NSTabView` 的方框标签——
 /// 后者是 10.10 时代的外观，在一堆原生设置窗口旁边看着像另一个年代的东西。
@@ -29,6 +29,8 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
     private let recordingSettings: RecordingSettingsStore?
 
     private static let pageWidth: CGFloat = 560
+    /// 「网站」这个名字看起来像站点管理，看不出是在配输入法
+    static let siteRulesTitle = "网页输入法"
 
     private var window: NSWindow?
     private var pageHost: NSView?
@@ -36,6 +38,7 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
     private var currentPage = 0
     private var generalPage: GeneralSettingsPage?
     private var inputSourcePage: InputSourceSettingsPage?
+    private var siteRulesPage: SiteRulesSettingsPage?
     private var translatePage: TranslateSettingsPage?
     private var ocrPage: OCRSettingsPage?
     private var hotkeyPage: HotkeySettingsPage?
@@ -73,6 +76,7 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
         generalPage?.reload(loginEnabled: loginItem.status.enabled,
                             smoothEnabled: smoothScroll?.isEnabled ?? false)
         inputSourcePage?.reload()
+        siteRulesPage?.reload()
         translatePage?.reload()
         ocrPage?.reload()
         hotkeyPage?.reload()
@@ -140,7 +144,12 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
 
         let inputPage = InputSourceSettingsPage(service: inputSource)
         inputPage.onChange = { [weak self] in self?.onChange?() }
+        inputPage.onOpenSiteRules = { [weak self] in self?.selectPage(titled: Self.siteRulesTitle) }
         inputSourcePage = inputPage
+
+        let sitePage = SiteRulesSettingsPage(service: inputSource)
+        sitePage.onChange = { [weak self] in self?.onChange?() }
+        siteRulesPage = sitePage
 
         let translate = TranslateSettingsPage()
         translate.onSave = { [weak self] in self?.onChange?() }
@@ -162,6 +171,7 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
         var entries: [(title: String, symbol: String, view: NSView, height: CGFloat)] = [
             ("通用", "gearshape", general, 560),
             ("输入法", "keyboard", inputPage, 660),
+            (Self.siteRulesTitle, "network", sitePage, 470),
             ("翻译", "character.book.closed", translate, 470),
             ("OCR", "text.viewfinder", ocr, 360),
             ("热键", "command", hotkey, 640),
@@ -171,7 +181,9 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
             let ruler = RulerSettingsPage(store: rulerSettings)
             ruler.onChange = { [weak self] in self?.onChange?() }
             rulerPage = ruler
-            entries.insert(("测量", "ruler", ruler, 400), at: 2)
+            // 插在「网页输入法」之后而不是「输入法」之后：这两页是一件事的两个层次，
+            // 中间夹一个「测量」会让它们看着像不相干的两个功能
+            entries.insert(("测量", "ruler", ruler, 400), at: 3)
         }
 
         pages = entries.map { entry in
@@ -213,11 +225,18 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
         let measured = page.fittingSize.height
         page.removeFromSuperview()
         guard measured > 160 else { return fallback }
-        return min(measured.rounded(.up), 700)
+        // 780 而不是 700：输入法页偶尔会多出一块「失效的输入法」提示，
+        // 上限压太低会把正常行的说明文字挤没
+        return min(measured.rounded(.up), 780)
     }
 
-    private func selectPage(_ index: Int, animated: Bool = true) {
-        guard !pages.isEmpty, let host = pageHost else { return }
+    /// 按标题切页。页签顺序会因为「测量」这类可选页而变，用下标跳容易指错。
+    private func selectPage(titled title: String) {
+        guard let index = pages.firstIndex(where: { $0.title == title }) else { return }
+        selectPage(index)
+    }
+
+    private func selectPage(_ index: Int, animated: Bool = true) {        guard !pages.isEmpty, let host = pageHost else { return }
         let safe = min(max(index, 0), pages.count - 1)
         currentPage = safe
         let page = pages[safe]

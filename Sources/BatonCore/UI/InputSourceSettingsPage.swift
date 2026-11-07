@@ -7,6 +7,9 @@ import AppKit
 @MainActor
 final class InputSourceSettingsPage: NSView, NSSearchFieldDelegate {
     var onChange: (() -> Void)?
+    /// 跳到「网页输入法」页。网站规则放在单独一页，但入口必须留在这一页，
+    /// 否则用户根本不知道还有那个页面。
+    var onOpenSiteRules: (() -> Void)?
 
     private weak var service: InputSourceService?
 
@@ -16,6 +19,11 @@ final class InputSourceSettingsPage: NSView, NSSearchFieldDelegate {
     private let addressBarPopup = NSPopUpButton()
     private let memoryCountLabel = NSTextField(labelWithString: "")
     private let clearMemoryButton = NSButton(title: "清除…", target: nil, action: nil)
+    private let siteRulesButton = NSButton(title: "管理…", target: nil, action: nil)
+
+    /// 配置里引用了、但系统里找不到的输入源。没有就整块隐藏
+    private let missingRows = NSStackView()
+    private let missingNote = NSTextField(labelWithString: "")
 
     private let searchField = NSSearchField()
     private let listNote = NSTextField(labelWithString: "")
@@ -31,6 +39,7 @@ final class InputSourceSettingsPage: NSView, NSSearchFieldDelegate {
     /// 搜索框才是找东西的正路。
     private static let renderLimit = 80
     private static let delayChoices = [0, 50, 100, 200]
+    private static let missingHint = "这些配置没有删掉：重新启用旧输入法就会自动恢复；不想装回来，就选个替代的迁过去。"
 
     init(service: InputSourceService?) {
         self.service = service
@@ -76,6 +85,26 @@ final class InputSourceSettingsPage: NSView, NSSearchFieldDelegate {
         clearMemoryButton.target = self
         clearMemoryButton.action = #selector(clearMemory)
 
+        siteRulesButton.bezelStyle = .rounded
+        siteRulesButton.controlSize = .small
+        siteRulesButton.target = self
+        siteRulesButton.action = #selector(openSiteRules)
+
+        missingRows.orientation = .vertical
+        missingRows.alignment = .leading
+        missingRows.spacing = 6
+        missingRows.isHidden = true
+
+        missingNote.font = .systemFont(ofSize: 11)
+        missingNote.textColor = .secondaryLabelColor
+        missingNote.lineBreakMode = .byTruncatingTail
+        missingNote.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // 页面高度是固定的，内容多出来时 Auto Layout 会挑最能压的压；
+        // 这行说明优先级低的话会被压成 2px，看着就像没渲染
+        missingNote.setContentCompressionResistancePriority(.required, for: .vertical)
+        missingNote.stringValue = Self.missingHint
+        missingNote.isHidden = true
+
         searchField.placeholderString = "搜索应用名或 bundle id"
         searchField.delegate = self
         searchField.translatesAutoresizingMaskIntoConstraints = false
@@ -106,6 +135,8 @@ final class InputSourceSettingsPage: NSView, NSSearchFieldDelegate {
 
         SettingsLayout.install([
             SettingsLayout.section("状态", [
+                missingNote,
+                missingRows,
                 SettingsLayout.row("按 App 记住输入法",
                                    detail: "切到别的 App 时自动换回上次用的输入法",
                                    control: enabledSwitch),
@@ -116,6 +147,9 @@ final class InputSourceSettingsPage: NSView, NSSearchFieldDelegate {
                 SettingsLayout.row("浏览器地址栏",
                                    detail: "焦点进地址栏时换源，敲网址不用先经过中文候选",
                                    control: addressBarPopup),
+                SettingsLayout.row("网站与输入框",
+                                   detail: "指定某个网站、某个输入框用哪个输入法",
+                                   control: siteRulesButton),
                 SettingsLayout.row("输入法记忆", control: memoryRow()),
             ]),
             SettingsLayout.section("应用", [
@@ -123,6 +157,9 @@ final class InputSourceSettingsPage: NSView, NSSearchFieldDelegate {
                 appsBox,
             ]),
         ], in: self)
+
+        // 先铺一次：窗口高度是按内容量的，这一步要在量高度之前把提示算进去
+        rebuildMissing()
     }
 
     private func memoryRow() -> NSStackView {
@@ -137,6 +174,10 @@ final class InputSourceSettingsPage: NSView, NSSearchFieldDelegate {
     // MARK: - 刷新
 
     func reload() {
+        // 打开设置页时对一次账：通知是异步的，刚装完输入法就点进来可能还没送到
+        service?.refreshSourceAvailability()
+        rebuildMissing()
+
         let enabled = service?.isEnabled ?? false
         enabledSwitch.state = enabled ? .on : .off
         currentLabel.stringValue = service?.currentSourceName ?? "—"
@@ -149,7 +190,44 @@ final class InputSourceSettingsPage: NSView, NSSearchFieldDelegate {
         memoryCountLabel.stringValue = memoryCount == 0 ? "还没有记录" : "\(memoryCount) 个 App 记住了上次的输入法"
         clearMemoryButton.isEnabled = memoryCount > 0
 
+        let siteCount = service?.siteRules.count ?? 0
+        siteRulesButton.title = siteCount == 0 ? "添加…" : "\(siteCount) 条 · 管理…"
+        siteRulesButton.isEnabled = enabled
+
         rebuildApps()
+    }
+
+    @objc private func openSiteRules() {
+        onOpenSiteRules?()
+    }
+
+    /// 失效源这块平时不显示——没换过输入法的人不该看到它。
+    private func rebuildMissing() {
+        clear(missingRows)
+        missingNote.stringValue = Self.missingHint
+        let missing = service?.missingSources ?? []
+        missingRows.isHidden = missing.isEmpty
+        missingNote.isHidden = missing.isEmpty
+        guard !missing.isEmpty, let service else { return }
+
+        for item in missing {
+            let row = MissingSourceRow(item: item, sources: service.installedSources)
+            row.onMigrate = { [weak self] newID in
+                self?.migrate(item, to: newID)
+            }
+            missingRows.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: missingRows.widthAnchor).isActive = true
+        }
+    }
+
+    private func migrate(_ item: MissingSource, to newID: String) {
+        guard let service else { return }
+        let summary = service.migrateSource(from: item.sourceID, to: newID)
+        guard !summary.isEmpty else { return }
+        reload()
+        onChange?()
+        let name = service.sourceName(id: newID) ?? newID
+        missingNote.stringValue = "已把 \(summary.total) 处配置迁到「\(name)」。"
     }
 
     override func viewDidMoveToWindow() {
@@ -217,7 +295,10 @@ final class InputSourceSettingsPage: NSView, NSSearchFieldDelegate {
                 isIgnored: row.isIgnored,
                 memoryName: row.memorySourceID.flatMap { service.sourceName(id: $0) },
                 hasConfig: row.hasAnyConfig,
-                sources: sources
+                sources: sources,
+                missingSourceName: row.ruleSourceID.flatMap { id in
+                    service.isSourceAvailable(id) ? nil : (service.sourceName(id: id) ?? id)
+                }
             )
             view.onSource = { [weak self] sourceID in
                 service.setRule(bundleID: row.bundleID, sourceID: sourceID)
@@ -306,8 +387,12 @@ final class InputSourceSettingsPage: NSView, NSSearchFieldDelegate {
         if let current,
            let index = addressBarPopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == current }) {
             addressBarPopup.selectItem(at: index)
+        } else if let current {
+            // 配过的源被卸载了：显式列出来，但不清掉配置——装回来还能用
+            addressBarPopup.addItem(withTitle: "已卸载：\(service?.sourceName(id: current) ?? current)")
+            addressBarPopup.lastItem?.representedObject = current
+            addressBarPopup.selectItem(at: addressBarPopup.numberOfItems - 1)
         } else {
-            // 配过的源被卸载了：显示「不处理」，但不清掉配置——装回来还能用
             addressBarPopup.selectItem(at: 0)
         }
     }
@@ -340,12 +425,16 @@ final class InputSourceSettingsPage: NSView, NSSearchFieldDelegate {
     @objc private func delayChanged() {
         let index = delayPopup.indexOfSelectedItem
         guard index >= 0, index < Self.delayChoices.count else { return }
-        service?.setSwitchDelay(Self.delayChoices[index])
+        guard let service, Self.delayChoices[index] != service.switchDelayMs else { return }
+        service.setSwitchDelay(Self.delayChoices[index])
         onChange?()
     }
 
     @objc private func addressBarChanged() {
-        service?.setAddressBarSource(addressBarPopup.selectedItem?.representedObject as? String)
+        let picked = addressBarPopup.selectedItem?.representedObject as? String
+        // 重新填充下拉框时可能顺带触发 action，值没变就别落盘
+        guard let service, picked != service.addressBarSourceID else { return }
+        service.setAddressBarSource(picked)
         onChange?()
     }
 
@@ -404,7 +493,7 @@ struct InputSourceRowModel: Equatable {
 /// 固定高度的滚动列表。设置页高度靠内容算，列表本身不能无限长，
 /// 否则 App 一多整页就被撑出屏幕。
 @MainActor
-private final class SettingsListView: NSScrollView {
+final class SettingsListView: NSScrollView {
     private let stack: NSStackView
     private let listHeight: CGFloat
     private var emptyRow: NSView?
@@ -492,6 +581,66 @@ private final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
+// MARK: - 失效源一行
+
+/// 「搜狗拼音 · 2 个 App、1 条网站规则   [选新源] [迁移]」
+///
+/// 只负责发出迁移意图，具体替换哪些地方由 service 做：UI 层不需要知道
+/// 配置里还有地址栏和学习记录这些地方。
+@MainActor
+private final class MissingSourceRow: NSView {
+    var onMigrate: ((String) -> Void)?
+
+    private let popup = NSPopUpButton()
+
+    init(item: MissingSource, sources: [InputSourceInfo]) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        heightAnchor.constraint(equalToConstant: 28).isActive = true
+
+        let label = NSTextField(labelWithString: "「\(item.name)」· \(item.breakdown)")
+        label.font = .systemFont(ofSize: 12)
+        label.lineBreakMode = .byTruncatingTail
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        label.toolTip = "\(item.name)（\(item.sourceID)）已不在系统输入法列表里\n\(item.breakdown)"
+
+        popup.font = .systemFont(ofSize: 12)
+        popup.controlSize = .small
+        for source in sources {
+            popup.addItem(withTitle: source.name)
+            popup.lastItem?.representedObject = source.id
+        }
+        popup.translatesAutoresizingMaskIntoConstraints = false
+        popup.widthAnchor.constraint(equalToConstant: 130).isActive = true
+
+        let button = NSButton(title: "迁移", target: self, action: #selector(migrateTapped))
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.isEnabled = !sources.isEmpty
+        button.toolTip = "把引用了这个输入法的所有配置，一次换成选中的输入法"
+
+        let stack = NSStackView(views: [label, popup, button])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func migrateTapped() {
+        guard let id = popup.selectedItem?.representedObject as? String else { return }
+        onMigrate?(id)
+    }
+}
+
 // MARK: - 应用行
 
 @MainActor
@@ -510,7 +659,8 @@ private final class InputSourceRuleRow: NSView {
          isIgnored: Bool,
          memoryName: String?,
          hasConfig: Bool,
-         sources: [InputSourceInfo]) {
+         sources: [InputSourceInfo],
+         missingSourceName: String? = nil) {
         self.configuredSourceID = sourceID
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
@@ -544,6 +694,12 @@ private final class InputSourceRuleRow: NSView {
         if let sourceID,
            let index = popup.itemArray.firstIndex(where: { ($0.representedObject as? String) == sourceID }) {
             popup.selectItem(at: index)
+        } else if let sourceID {
+            // 配过但源没了：必须显式说出来。落到「按记忆」会让人以为这条规则不存在，
+            // 可它其实还占着最高优先级，把记忆完全挡住了
+            popup.addItem(withTitle: "已卸载：\(missingSourceName ?? "未知")")
+            popup.lastItem?.representedObject = sourceID
+            popup.selectItem(at: popup.numberOfItems - 1)
         } else {
             // 用标题选中而不是下标：NSPopUpButton 在「第一项 representedObject 为 nil」时
             // 有时会自己跳到下一个可选项，显式点名最稳
