@@ -29,7 +29,7 @@ public final class ClipboardPanelController: NSObject {
     private var keyMonitor: Any?
 
     private static let panelSize = NSSize(width: 580, height: 640)
-    private static let rowHeight: CGFloat = 48
+    private static let rowHeight: CGFloat = 32
     private static let previewHeight: CGFloat = 168
     private static let frameKey = "clipboard.panelOrigin"
 
@@ -387,7 +387,7 @@ extension ClipboardPanelController: NSTableViewDataSource, NSTableViewDelegate {
         }()
         let hit = items[row]
         cell.configure(hit: hit, index: row + 1,
-                       thumbnail: thumbnails.image(for: hit.item, store: store, size: 32))
+                       thumbnail: thumbnails.image(for: hit.item, store: store, size: 20))
         return cell
     }
 
@@ -404,7 +404,7 @@ private final class ClipRowCell: NSTableCellView {
     private let indexLabel = NSTextField(labelWithString: "")
     private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
-    private let subtitleLabel = NSTextField(labelWithString: "")
+    private let timeLabel = NSTextField(labelWithString: "")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -420,35 +420,38 @@ private final class ClipRowCell: NSTableCellView {
         titleLabel.font = .systemFont(ofSize: 13)
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.maximumNumberOfLines = 1
+        // 标题先被压缩，时间固定给足
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        subtitleLabel.font = .systemFont(ofSize: 11)
-        subtitleLabel.textColor = .secondaryLabelColor
-        subtitleLabel.lineBreakMode = .byTruncatingTail
-        subtitleLabel.maximumNumberOfLines = 1
-        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        timeLabel.font = .systemFont(ofSize: 11)
+        timeLabel.textColor = .tertiaryLabelColor
+        timeLabel.alignment = .right
+        timeLabel.maximumNumberOfLines = 1
+        timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        timeLabel.setContentHuggingPriority(.required, for: .horizontal)
+        timeLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        for view in [indexLabel, iconView, titleLabel, subtitleLabel] as [NSView] {
+        for view in [indexLabel, iconView, titleLabel, timeLabel] as [NSView] {
             addSubview(view)
         }
 
         NSLayoutConstraint.activate([
             indexLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
             indexLabel.widthAnchor.constraint(equalToConstant: 14),
-            indexLabel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            indexLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             iconView.leadingAnchor.constraint(equalTo: indexLabel.trailingAnchor, constant: 6),
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 28),
-            iconView.heightAnchor.constraint(equalToConstant: 28),
+            iconView.widthAnchor.constraint(equalToConstant: 20),
+            iconView.heightAnchor.constraint(equalToConstant: 20),
 
-            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
-            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 7),
+            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 8),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            subtitleLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
-            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 1),
+            timeLabel.leadingAnchor.constraint(greaterThanOrEqualTo: titleLabel.trailingAnchor, constant: 8),
+            timeLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            timeLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 
@@ -459,8 +462,10 @@ private final class ClipRowCell: NSTableCellView {
         let item = hit.item
         indexLabel.stringValue = index <= 9 ? "\(index)" : ""
         iconView.image = thumbnail ?? Self.symbol(for: item)
+        // 路径的文件名在末尾，尾部截断会把最有用的部分切掉，改成中间截断
+        titleLabel.lineBreakMode = item.clipKind == .file ? .byTruncatingMiddle : .byTruncatingTail
         titleLabel.attributedStringValue = Self.title(for: item, ranges: hit.ranges)
-        subtitleLabel.stringValue = Self.subtitle(for: item)
+        timeLabel.stringValue = Self.relativeTime(item.sortTime)
     }
 
     private static func symbol(for item: ClipItem) -> NSImage? {
@@ -507,28 +512,6 @@ private final class ClipRowCell: NSTableCellView {
         return attributed
     }
 
-    private static func subtitle(for item: ClipItem) -> String {
-        var parts: [String] = [item.clipKind.title]
-        switch item.clipKind {
-        case .text:
-            parts = ["\(item.text?.count ?? 0) 字"]
-        case .image:
-            if let bytes = item.byteSize {
-                parts.append(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))
-            }
-        case .file:
-            let count = (item.meta ?? "").split(separator: "\n").count
-            parts.append("\(count) 个")
-        case .color:
-            parts.append(item.text ?? "")
-        }
-        if let app = item.sourceApp, !app.isEmpty {
-            parts.append(app)
-        }
-        parts.append(Self.relativeTime(item.sortTime))
-        return parts.joined(separator: " · ")
-    }
-
     private static let relative: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
@@ -544,6 +527,32 @@ private final class ClipRowCell: NSTableCellView {
 
 // MARK: - 预览
 
+/// 预览区顶部的一行元信息。列表行只保留时间，其余都挪到这里，
+/// 换来更密的行高（同屏能多看一半条目）。
+private func clipDetail(for item: ClipItem) -> String {
+    var parts: [String] = [item.clipKind.title]
+    switch item.clipKind {
+    case .text:
+        parts.append("\(item.text?.count ?? 0) 字")
+    case .image:
+        if let width = item.pixelWidth, let height = item.pixelHeight {
+            parts.append("\(width)×\(height)")
+        }
+        if let bytes = item.byteSize {
+            parts.append(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))
+        }
+    case .file:
+        let count = (item.meta ?? "").split(separator: "\n").count
+        parts.append("\(count) 个文件")
+    case .color:
+        break
+    }
+    if let app = item.sourceApp, !app.isEmpty {
+        parts.append("来自 \(app)")
+    }
+    return parts.joined(separator: " · ")
+}
+
 @MainActor
 private final class ClipPreviewView: NSView {
     private let textScroll = NSScrollView()
@@ -551,6 +560,7 @@ private final class ClipPreviewView: NSView {
     private let imageView = NSImageView()
     private let swatch = NSView()
     private let hint = NSTextField(labelWithString: "")
+    private let metaLabel = NSTextField(labelWithString: "")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -589,15 +599,25 @@ private final class ClipPreviewView: NSView {
         hint.alignment = .center
         hint.translatesAutoresizingMaskIntoConstraints = false
 
-        for view in [textScroll, imageView, swatch, hint] as [NSView] { addSubview(view) }
+        metaLabel.font = .systemFont(ofSize: 11)
+        metaLabel.textColor = .secondaryLabelColor
+        metaLabel.lineBreakMode = .byTruncatingTail
+        metaLabel.maximumNumberOfLines = 1
+        metaLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        for view in [textScroll, imageView, swatch, hint, metaLabel] as [NSView] { addSubview(view) }
 
         NSLayoutConstraint.activate([
-            textScroll.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            metaLabel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            metaLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            metaLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+
+            textScroll.topAnchor.constraint(equalTo: metaLabel.bottomAnchor, constant: 4),
             textScroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
             textScroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
             textScroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
 
-            imageView.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            imageView.topAnchor.constraint(equalTo: metaLabel.bottomAnchor, constant: 4),
             imageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             imageView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             imageView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
@@ -623,9 +643,11 @@ private final class ClipPreviewView: NSView {
         hint.isHidden = false
 
         guard let item else {
+            metaLabel.stringValue = ""
             hint.stringValue = "选中一条记录预览"
             return
         }
+        metaLabel.stringValue = clipDetail(for: item)
 
         switch item.clipKind {
         case .text:
