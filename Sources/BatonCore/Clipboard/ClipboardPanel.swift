@@ -258,14 +258,21 @@ public final class ClipboardPanelController: NSObject {
             previewColumn.removeFromSuperview()
         }
 
-        // 目标宽度每次都设：窗口可能被内容最小宽度撑大过，收起时要能收回来
+        // 目标宽度每次都设：窗口可能被内容最小宽度撑大过，收起时要能收回来。
+        // 同时按屏幕可用区域收敛，展开不许顶出屏幕（窄屏就压窄抽屉）。
         var frame = panel.frame
-        let targetWidth = Self.listWidth + (visible ? Self.previewWidth : 0)
-        if visible, let screen = panel.screen?.visibleFrame,
-           frame.minX + targetWidth > screen.maxX {
-            frame.origin.x = max(screen.minX, screen.maxX - targetWidth)
+        if let screen = (panel.screen ?? NSScreen.main)?.visibleFrame {
+            let width = visible
+                ? PanelGeometry.width(list: Self.listWidth, drawer: Self.previewWidth, screen: screen)
+                : Self.listWidth
+            frame.size.width = width
+            if visible {
+                // 只在展开时挪位置；收起保持左边不动，窗口才不会来回跳
+                frame.origin.x = PanelGeometry.originX(current: frame.minX, width: width, screen: screen)
+            }
+        } else {
+            frame.size.width = Self.listWidth + (visible ? Self.previewWidth : 0)
         }
-        frame.size.width = targetWidth
         if animated, changed {
             panel.setFrame(frame, display: true, animate: true)
         } else {
@@ -278,17 +285,30 @@ public final class ClipboardPanelController: NSObject {
         if defaults.object(forKey: Self.frameKey) != nil {
             let point = NSPointFromString(defaults.string(forKey: Self.frameKey) ?? "")
             if point != .zero, isOnAnyScreen(point) {
-                panel.setFrameOrigin(point)
+                panel.setFrameOrigin(clamped(point))
                 return
             }
         }
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
         guard let visible = screen?.visibleFrame else { return }
-        panel.setFrameOrigin(NSPoint(
+        panel.setFrameOrigin(clamped(NSPoint(
             x: visible.midX - Self.listWidth / 2,
             y: visible.maxY - Self.panelHeight - 80
-        ))
+        )))
+    }
+
+    /// 记住的位置可能来自别的屏幕或改过分辨率，落位时按当前屏幕收一次，
+    /// 保证整个窗口都在可见区域内（阴影也不会贴边被裁）。
+    private func clamped(_ point: NSPoint) -> NSPoint {
+        let center = NSPoint(x: point.x + Self.listWidth / 2, y: point.y + Self.panelHeight / 2)
+        let screen = NSScreen.screens.first { $0.visibleFrame.contains(center) } ?? NSScreen.main
+        guard let visible = screen?.visibleFrame else { return point }
+        let margin = PanelGeometry.margin
+        return NSPoint(
+            x: PanelGeometry.originX(current: point.x, width: Self.listWidth, screen: visible),
+            y: min(max(point.y, visible.minY + margin), visible.maxY - margin - Self.panelHeight)
+        )
     }
 
     private func isOnAnyScreen(_ point: NSPoint) -> Bool {
