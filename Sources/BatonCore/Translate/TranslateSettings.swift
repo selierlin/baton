@@ -81,6 +81,19 @@ public struct ProviderPreset: Sendable, Identifiable, Equatable {
 }
 
 public struct TranslateSettings: Codable, Sendable, Equatable {
+    /// BCP-47 与中文名。设置页的下拉框和结果浮窗的身份行共用这一份，
+    /// 免得两边各写一张表、加语言时漏掉一处。
+    public static let languages: [(code: String, name: String)] = [
+        ("zh-Hans", "简体中文"),
+        ("zh-Hant", "繁体中文"),
+        ("en", "英语"),
+        ("ja", "日语"),
+    ]
+
+    public static func languageName(for code: String) -> String {
+        languages.first { $0.code == code }?.name ?? code
+    }
+
     public var providers: [ProviderConfig]
     /// 当前选中的 provider id。
     public var activeID: String

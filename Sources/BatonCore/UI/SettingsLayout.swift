@@ -7,7 +7,7 @@ import AppKit
 /// 在 560pt 宽的窗口里看着像没对齐。
 @MainActor
 enum SettingsLayout {
-    static let pageWidth: CGFloat = 560
+    static let pageWidth: CGFloat = 680
     static let margin: CGFloat = 20
 
     /// 把若干分组从上到下垂进页面。

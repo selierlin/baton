@@ -26,12 +26,7 @@ final class TranslateSettingsPage: NSView {
     }
 
     /// 目标语言：BCP-47 + 中文名。源语言多一个「自动」。
-    private static let languages: [(String, String)] = [
-        ("zh-Hans", "简体中文"),
-        ("zh-Hant", "繁体中文"),
-        ("en", "英语"),
-        ("ja", "日语"),
-    ]
+    private static let languages = TranslateSettings.languages
 
     override init(frame: NSRect) {
         super.init(frame: frame)

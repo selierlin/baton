@@ -7,9 +7,14 @@ private struct SettingsPage {
     let symbol: String
     let view: NSView
     var height: CGFloat
+    /// 悬停提示：页签为了排得开只能取短名，全称放这里
+    var tip: String?
 }
 
-/// 偏好设置窗口。页签：通用、输入法、测量、网页输入法、翻译、OCR、热键、历史（测量可选）。
+/// 偏好设置窗口。页签：通用、滚动、截图、录制、输入法、网页输入法、测量、翻译、OCR、热键、历史（测量可选）。
+///
+/// 一页只对应一个功能模块：「通用」只留登录项和权限，滚动/截图/录制各占一页。
+/// 以前这些全堆在「通用」里，改个截图倒计时得先猜它归在哪一类。
 ///
 /// 顶部用 `NSToolbar`（`.preference` 样式）切页，而不是 `NSTabView` 的方框标签——
 /// 后者是 10.10 时代的外观，在一堆原生设置窗口旁边看着像另一个年代的东西。
@@ -28,15 +33,31 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
     private let captureSettings: CaptureSettingsStore?
     private let recordingSettings: RecordingSettingsStore?
 
-    private static let pageWidth: CGFloat = 560
+    /// 11 个页签在 560 宽下会被折进「»」溢出菜单，加宽到 680 才排得开
+    private static let pageWidth: CGFloat = 680
+    /// 页签名为了排得开只能取短名，悬停时把话说全。
+    private static let tips: [String: String] = [
+        scrollTitle: "鼠标滚轮的平滑滚动，触控板保持系统手感",
+        clipboardTitle: "剪贴板历史：⇧⌘V 打开，这里管条数与容量",
+    ]
+
     /// 「网站」这个名字看起来像站点管理，看不出是在配输入法
     static let siteRulesTitle = "网页输入法"
+    static let inputSourceTitle = "输入法"
+    /// 「滚动」单看会被读成滚动截图；带上「平滑」才明确指的是鼠标滚轮的手感
+    static let scrollTitle = "平滑滚动"
+    /// 「历史」没有主语，看不出是剪贴板；「剪贴板历史」五个字又和「网页输入法」一样宽，
+    /// 页签上取「剪贴板」，全称放进悬停提示
+    static let clipboardTitle = "剪贴板"
 
     private var window: NSWindow?
     private var pageHost: NSView?
     private var pages: [SettingsPage] = []
     private var currentPage = 0
     private var generalPage: GeneralSettingsPage?
+    private var scrollPage: ScrollSettingsPage?
+    private var capturePage: CaptureSettingsPage?
+    private var recordingPage: RecordingSettingsPage?
     private var inputSourcePage: InputSourceSettingsPage?
     private var siteRulesPage: SiteRulesSettingsPage?
     private var translatePage: TranslateSettingsPage?
@@ -72,9 +93,22 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// 按标题开页：页签下标会随页面增减而变，从外面跳页用标题才不会指错。
+    public func show(titled title: String) {
+        let window = self.window ?? buildWindow()
+        self.window = window
+        reload()
+        selectPage(titled: title)
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     private func reload() {
-        generalPage?.reload(loginEnabled: loginItem.status.enabled,
-                            smoothEnabled: smoothScroll?.isEnabled ?? false)
+        generalPage?.reload(loginEnabled: loginItem.status.enabled)
+        scrollPage?.reload(enabled: smoothScroll?.isEnabled ?? false)
+        capturePage?.reload()
+        recordingPage?.reload()
         inputSourcePage?.reload()
         siteRulesPage?.reload()
         translatePage?.reload()
@@ -100,47 +134,56 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
         general.onLoginToggle = { [weak self] enabled in
             self?.applyLogin(enabled)
         }
-        general.onSmoothScrollToggle = { [weak self] enabled in
+        generalPage = general
+
+        let scroll = ScrollSettingsPage()
+        scroll.onToggle = { [weak self] enabled in
             self?.smoothScroll?.setEnabled(enabled)
             self?.onChange?()
         }
-        general.smoothSettings = { [weak self] in
+        scroll.settings = { [weak self] in
             self?.smoothScroll?.settings ?? SmoothScrollSettings()
         }
-        general.onSmoothTuning = { [weak self] distance, duration in
+        scroll.onTuning = { [weak self] distance, duration in
             self?.smoothScroll?.apply { settings in
                 settings.pointsPerLine = distance
                 settings.duration = duration
             }
         }
-        general.onForceMouseChange = { [weak self] enabled in
+        scroll.onForceMouseChange = { [weak self] enabled in
             self?.smoothScroll?.apply { $0.forceMouse = enabled }
             self?.onChange?()
         }
-        general.smoothDiagnostics = { [weak self] in
+        scroll.diagnostics = { [weak self] in
             self?.smoothScroll?.lastDecision
         }
-        general.delaySeconds = { [weak self] in
+        scrollPage = scroll
+
+        let capture = CaptureSettingsPage()
+        capture.delaySeconds = { [weak self] in
             self?.captureSettings?.settings.timedSeconds ?? 5
         }
-        general.onDelayChange = { [weak self] seconds in
+        capture.onDelayChange = { [weak self] seconds in
             self?.captureSettings?.setTimedSeconds(seconds)
         }
-        general.capturesAudio = { [weak self] in
+        capturePage = capture
+
+        let recording = RecordingSettingsPage()
+        recording.capturesAudio = { [weak self] in
             self?.recordingSettings?.capturesAudio ?? true
         }
-        general.onAudioToggle = { [weak self] enabled in
+        recording.onAudioToggle = { [weak self] enabled in
             self?.recordingSettings?.setCapturesAudio(enabled)
         }
-        general.capturesMicrophone = { [weak self] in
+        recording.capturesMicrophone = { [weak self] in
             self?.recordingSettings?.capturesMicrophone ?? false
         }
-        general.onMicrophoneToggle = { [weak self] enabled in
+        recording.onMicrophoneToggle = { [weak self] enabled in
             self?.recordingSettings?.setCapturesMicrophone(enabled)
             // 一打开就弹授权框，别等用户按下录制才发现没权限
             if enabled { Task { _ = await MicrophoneCapture.requestAccess() } }
         }
-        generalPage = general
+        recordingPage = recording
 
         let inputPage = InputSourceSettingsPage(service: inputSource)
         inputPage.onChange = { [weak self] in self?.onChange?() }
@@ -169,21 +212,25 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
 
         // 高度按各页内容给：页面内部是从顶往下排，多出来的空间落在底部，所以给宽一点也不会错位
         var entries: [(title: String, symbol: String, view: NSView, height: CGFloat)] = [
-            ("通用", "gearshape", general, 560),
-            ("输入法", "keyboard", inputPage, 660),
+            ("通用", "gearshape", general, 300),
+            (Self.scrollTitle, "scroll", scroll, 260),
+            ("截图", "camera.viewfinder", capture, 260),
+            ("录制", "record.circle", recording, 220),
+            (Self.inputSourceTitle, "keyboard", inputPage, 660),
             (Self.siteRulesTitle, "network", sitePage, 470),
             ("翻译", "character.book.closed", translate, 470),
             ("OCR", "text.viewfinder", ocr, 360),
             ("热键", "command", hotkey, 640),
-            ("历史", "clock.arrow.circlepath", history, 420),
+            (Self.clipboardTitle, "clock.arrow.circlepath", history, 420),
         ]
         if let rulerSettings {
             let ruler = RulerSettingsPage(store: rulerSettings)
             ruler.onChange = { [weak self] in self?.onChange?() }
             rulerPage = ruler
-            // 插在「网页输入法」之后而不是「输入法」之后：这两页是一件事的两个层次，
-            // 中间夹一个「测量」会让它们看着像不相干的两个功能
-            entries.insert(("测量", "ruler", ruler, 400), at: 3)
+            // 紧跟「截图」：量尺寸和框选是连着用的两个动作。
+            // 用标题找位置而不是写死下标，前面加页时不用再回来改数字
+            let after = entries.firstIndex { $0.title == "截图" } ?? entries.count - 1
+            entries.insert(("测量", "ruler", ruler, 400), at: after + 1)
         }
 
         pages = entries.map { entry in
@@ -191,7 +238,8 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
                          title: entry.title,
                          symbol: entry.symbol,
                          view: entry.view,
-                         height: measuredHeight(of: entry.view, fallback: entry.height))
+                         height: measuredHeight(of: entry.view, fallback: entry.height),
+                         tip: Self.tips[entry.title])
         }
 
         let host = NSView()
@@ -224,10 +272,11 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
         host.layoutSubtreeIfNeeded()
         let measured = page.fittingSize.height
         page.removeFromSuperview()
-        guard measured > 160 else { return fallback }
-        // 780 而不是 700：输入法页偶尔会多出一块「失效的输入法」提示，
-        // 上限压太低会把正常行的说明文字挤没
-        return min(measured.rounded(.up), 780)
+        // 量不出来（页面里是滚动视图，高度靠外部决定）就退回调用方给的经验值
+        let natural = measured > 160 ? measured : fallback
+        // 下限 260：截图页只有一行，按实测给会把窗口缩成一条，切页时上下乱跳
+        // 上限 780：输入法页偶尔会多出一块「失效的输入法」提示，压太低会挤掉说明文字
+        return min(max(natural.rounded(.up), 260), 780)
     }
 
     /// 按标题切页。页签顺序会因为「测量」这类可选页而变，用下标跳容易指错。
@@ -291,7 +340,7 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
         let item = NSToolbarItem(itemIdentifier: itemIdentifier)
         item.label = page.title
         item.paletteLabel = page.title
-        item.toolTip = page.title
+        item.toolTip = page.tip ?? page.title
         item.image = NSImage(systemSymbolName: page.symbol, accessibilityDescription: page.title)
         item.target = self
         item.action = #selector(toolbarPageClicked(_:))
@@ -310,16 +359,14 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
             ModalAlert.notify(title: "无法修改登录项", message: error.localizedDescription,
                               name: "login.set", above: window)
         }
-        generalPage?.reload(loginEnabled: loginItem.status.enabled,
-                            smoothEnabled: smoothScroll?.isEnabled ?? false)
+        generalPage?.reload(loginEnabled: loginItem.status.enabled)
         onChange?()
     }
 
     // MARK: - NSWindowDelegate
 
     public func windowWillClose(_ notification: Notification) {
-        generalPage?.reload(loginEnabled: loginItem.status.enabled,
-                            smoothEnabled: smoothScroll?.isEnabled ?? false)
+        generalPage?.reload(loginEnabled: loginItem.status.enabled)
         onClose?()
     }
 }
