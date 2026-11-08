@@ -46,6 +46,8 @@ Sources/BatonApp          App 入口（含 --stitch / --ocr / --scroll-* / --pre
 Sources/BatonOCR          OCR 子进程（空闲 20 s 自退）
 Sources/BatonProbe        冒烟探针（CLI）
 Scripts/make-app.sh       打包成 dist/Baton.app
+Packaging/make-icon.swift 画 App 图标（squircle + 指挥棒 + 节拍弧）
+Packaging/make-icns.sh    把 1024 的 PNG 打成 AppIcon.icns
 Tests/BatonCoreTests      323 个单测
 ```
 
@@ -229,10 +231,10 @@ ad-hoc 签名每次重建 cdhash 都变，TCC 授权会静默失效（界面勾�
 - **保留富文本**：一条记录存下 pasteboard 的全部可持久化类型（string / rtf / html / file-url），
   粘回 Word、网页时格式不丢；`⌥↵` 才降级成纯文本
 - **图片存原始格式**：PNG/JPEG/HEIC/GIF/WebP 按原字节入库（GIF 保动画）；只有 TIFF/BMP 重编码成 PNG
-- **图片 OCR 标题**：入库后用 Vision 识别前两行当标题，图里的字也能搜到（设置 → 历史可关）
+- **图片 OCR 标题**：入库后用 Vision 识别前两行当标题，图里的字也能搜到（设置 → 剪贴板可关）
 - 库文件：`~/Library/Application Support/Baton/baton.sqlite`，图片在 `blobs/`
 - 机密类型（`ConcealedType` / `TransientType` / 密码管理器标记）一律不落库
-- 上限默认 800 条 / 500 MB（设置 → 历史可调）；裁剪跳过被钉住的条目；blob 用孤儿 GC 回收
+- 上限默认 800 条 / 500 MB（设置 → 剪贴板可调）；裁剪跳过被钉住的条目；blob 用孤儿 GC 回收
 
 冒烟：`dist/Baton.app/Contents/MacOS/Baton --clip-panel`（1 秒后自动退出）
 
@@ -294,7 +296,7 @@ ad-hoc 签名每次重建 cdhash 都变，TCC 授权会静默失效（界面勾�
 dist/Baton.app/Contents/MacOS/Baton --input-sources          # 列出已启用、可选的源
 dist/Baton.app/Contents/MacOS/Baton --input-switch <id>      # 直接切（会改系统状态）
 dist/Baton.app/Contents/MacOS/Baton --browser-focus          # 看当前焦点算成 page / shell / unknown
-dist/Baton.app/Contents/MacOS/Baton --prefs 1                # 直接打开输入法设置页
+dist/Baton.app/Contents/MacOS/Baton --prefs 输入法            # 按标题开设置页（也可以传下标）
 ```
 
 ### 截图三种进入方式（P3）
@@ -334,7 +336,7 @@ dist/Baton.app/Contents/MacOS/Baton --prefs 1                # 直接打开输�
 HJKL / F / C / T / ⎋ 五行 —— 提示条只列真能按的键，不写按了没反应的。
 
 区域/窗口/活动窗口截完都直接进标注；元素截图和「截取上一次区域」的另存版本走别的出口。
-延迟截图的秒数在 设置 → 通用 → 延迟截图 里选（3 / 5 / 10 / 15 秒），倒计时期间按 Esc 取消。
+延迟截图的秒数在 设置 → 截图 → 延迟截图 里选（3 / 5 / 10 / 15 秒），倒计时期间按 Esc 取消。
 
 实现要点：
 
@@ -474,6 +476,7 @@ BATON_STITCH_DEBUG=1 ...                    # 逐帧打印 adv/back/still/miss
 
 - **⇧⌘O** 截图 OCR、**⇧⌘Y** 截图翻译、**⇧⌘T** 划词翻译（Chrome / Safari / TextEdit 实测可用）
 - OCR 默认走 `BatonOCR` 子进程（常驻 15 MB，空闲 20 s 自退），失败自动降级进程内
+- 截图里带二维码时，OCR 窗会把码的内容一并解出来（橙色框 + 右侧「识别到二维码」），剪贴板拿到的也是「文本 + 码内容」；只认 QR，条形码不标框（跟 Bob 一致）
 - 翻译走百度 API（436 ms），key 在「设置 → 翻译 / OCR」里配，落 Keychain 不进配置文件
 - 划词取词两段式：先 `AXSelectedText`，拿不到再走 WebKit 的 `AXTextAttributedStringForTextMarkerRange`
 
@@ -502,8 +505,8 @@ BATON_STITCH_DEBUG=1 ...                    # 逐帧打印 adv/back/still/miss
   移到废纸篓；空格播放/暂停、Esc 关掉。**不主动激活 Finder**（那会把用户的窗口切走）。取消 → 删文件
 - 菜单栏图标录制期间变红色 `record.circle.fill`，菜单里「停止录制」同时可用
 - 带系统声音（AAC 48kHz 立体声，走 SCK 的 `capturesAudio`，不需要麦克风权限）；
-  设置 → 通用可以关掉「录制系统声音」。H.264 / MP4 / 12 Mbps，帧率 10–60（默认 30）
-- 可带麦克风旁白（设置 → 通用「录制麦克风旁白」，默认关）。麦克风走独立的 `AVCaptureSession`
+  设置 → 录制可以关掉「录制系统声音」。H.264 / MP4 / 12 Mbps，帧率 10–60（默认 30）
+- 可带麦克风旁白（设置 → 录制「录制麦克风旁白」，默认关）。麦克风走独立的 `AVCaptureSession`
   采 48kHz 立体声 Float32，和系统声音在 `AudioMixer` 里**按时间轴相加成一轨**（80ms 前瞻等
   麦克风到场），所以成片永远只有一条音轨，播放器/剪辑软件不用处理多轨。峰值超 1 就削顶，
   不爆音；只开麦克风（关掉系统声音）也能单独录旁白
