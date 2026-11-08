@@ -37,6 +37,11 @@ cp "$OCR_BIN" "$APP/Contents/MacOS/BatonOCR"
 RES_BUNDLE="$ROOT/.build/$CONFIG/Baton_BatonCore.bundle"
 [ -d "$RES_BUNDLE" ] || { echo "找不到资源包 $RES_BUNDLE"; exit 1; }
 cp -R "$RES_BUNDLE" "$APP/Contents/Resources/"
+# App 图标：由 Packaging/make-icon.swift 画好后用 Packaging/make-icns.sh 打包，
+# 构建只负责拷进 Resources，不在打包时重画。
+ICON="$ROOT/Packaging/AppIcon.icns"
+[ -f "$ICON" ] || { echo "找不到 $ICON，先跑 ./Packaging/make-icns.sh"; exit 1; }
+cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -48,6 +53,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>Baton</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleDisplayName</key><string>Baton</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
