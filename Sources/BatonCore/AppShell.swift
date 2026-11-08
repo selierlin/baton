@@ -78,6 +78,12 @@ public final class AppShell: NSObject {
         startClipboard()
         startInputSource()
         translator = TranslateCoordinator()
+        // 浮窗右上角的齿轮、OCR 窗的齿轮都走这里，页签按标题找，别记下标
+        translator?.onOpenSettings = { [weak self] title in
+            self?.openPreferences(titled: title)
+        }
+        // OCR 窗左上角的剪刀 = 再来一次截图 OCR
+        translator?.onRequestCapture = { [weak self] in self?.captureOCR() }
         annotator = AnnotateWindowController(pinController: pinController)
         annotator?.onFinish = { [weak self] _ in
             guard let self, self.annotatorHoldingRegular else { return }
@@ -173,9 +179,7 @@ public final class AppShell: NSObject {
                                    accessibilityDescription: "正在录制")
             button.contentTintColor = .systemRed
         } else {
-            let image = NSImage(systemSymbolName: "command", accessibilityDescription: "Baton")
-            image?.isTemplate = true
-            button.image = image
+            button.image = StatusIcon.baton()
             button.contentTintColor = nil
         }
     }
@@ -275,9 +279,7 @@ public final class AppShell: NSObject {
     private func buildStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            let image = NSImage(systemSymbolName: "command", accessibilityDescription: "Baton")
-            image?.isTemplate = true
-            button.image = image
+            button.image = StatusIcon.baton()
             button.toolTip = "Baton"
         }
 
@@ -495,9 +497,9 @@ public final class AppShell: NSObject {
         inputSourceMenuItem?.state = inputSource.isEnabled ? .on : .off
     }
 
-    /// 页序：通用 0、输入法 1、测量 2（有的话）。
+    /// 页序：通用、滚动、截图、录制、输入法…（按模块分页后别再记下标）
     @objc private func showInputSourceSettings() {
-        openPreferences(tab: 1)
+        openPreferences(titled: PreferencesWindowController.inputSourceTitle)
     }
 
     @objc private func toggleSmoothScroll() {
@@ -522,7 +524,16 @@ public final class AppShell: NSObject {
     @objc private func showPreferencesFromMenu() { openPreferences() }
 
     public func openPreferences(tab: Int = 0) {
-        ActionLog.action("prefs.open", "tab=\(tab)")
+        presentPreferences(tab: tab, title: nil)
+    }
+
+    /// 按页标题开设置：页签会随功能模块增减，调用方不该记下标。
+    public func openPreferences(titled title: String) {
+        presentPreferences(tab: 0, title: title)
+    }
+
+    private func presentPreferences(tab: Int, title: String?) {
+        ActionLog.action("prefs.open", title.map { "page=\($0)" } ?? "tab=\(tab)")
         let prefs: PreferencesWindowController
         if let existing = preferences {
             prefs = existing
@@ -554,7 +565,11 @@ public final class AppShell: NSObject {
             activation.enterRegular()
             preferencesHoldingRegular = true
         }
-        prefs.show(tab: tab)
+        if let title {
+            prefs.show(titled: title)
+        } else {
+            prefs.show(tab: tab)
+        }
     }
 
     /// 设置里改了开关后，菜单栏的勾选要跟着走。

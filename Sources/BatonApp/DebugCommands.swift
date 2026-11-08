@@ -196,8 +196,17 @@ case "--clip-panel":
 
 case "--prefs":
     shell.start()
-    // 冒烟用：直接落到指定页，省得用 UI scripting 点菜单栏
-    shell.openPreferences(tab: args.count > 1 ? (Int(args[1]) ?? 0) : 0)
+    // 冒烟用：直接落到指定页，省得用 UI scripting 点菜单栏。
+    // 参数可以是下标，也可以是页标题（页一多，下标容易记混）
+    if let arg = args.dropFirst().first {
+        if let index = Int(arg) {
+            shell.openPreferences(tab: index)
+        } else {
+            shell.openPreferences(titled: arg)
+        }
+    } else {
+        shell.openPreferences()
+    }
     app.run()
 
 case "--scroll-status":
@@ -407,18 +416,144 @@ case "--pin":
     app.run()
 
 case "--translate-panel":
-    let preview = args.dropFirst().first ?? "Hello, world. 这是一段用来检查排版的中文。"
+    // 用法：--translate-panel [ok|loading|error|ocr]。四种状态版式差别很大，
+    // 逐个截图才能确认高度和留白，别只验「有结果」那一种。
+    let state = args.dropFirst().first ?? "ok"
     MainActor.assumeIsolated {
+        // 深色版式要单独看：卡片、气泡、按钮都是动态色，别只在浅色下验收
+        if ProcessInfo.processInfo.environment["BATON_DARK"] == "1" {
+            NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
         let panel = TranslatePanelController()
-        panel.show(result: TranslateResult(text: "这是译文预览，用来检查行高、换行和复制按钮位置。长句应当正常折行，不应把面板撑宽。",
-                                           providerID: "preview",
-                                           milliseconds: 123),
-                   source: preview,
-                   providerName: "Preview")
+        let source = "With macOS Sonoma, work and play on your Mac are even more powerful. "
+            + "Elevate your presence on video calls."
+        let languages = TranslateLanguagePair(source: "en", target: "zh-Hans")
+        switch state {
+        case "loading":
+            panel.showLoading(source: source, languages: languages,
+                              providerName: "DeepSeek", providerID: "deepseek")
+        case "error":
+            panel.showFailure(message: "请求超时：服务端 30 秒内没有返回。检查网络，或换一个服务商再试。",
+                              source: source,
+                              languages: languages,
+                              providerName: "百度翻译",
+                              providerID: "baidu")
+        case "long":
+            let body = Array(repeating: "借助 macOS Sonoma，你在 Mac 上的工作和娱乐体验会更加强大。提升你在视频通话中的存在感，并以全新的方式获取信息。", count: 6)
+                .joined(separator: "\n\n")
+            panel.show(result: TranslateResult(text: body, providerID: "preview", milliseconds: 412),
+                       source: source + " " + source,
+                       languages: languages,
+                       providerName: "DeepSeek",
+                       providerID: "deepseek")
+        case "ocr":
+            panel.showText(title: "识别结果",
+                           subtitle: "百度 OCR · 已复制 143 个字符",
+                           body: "With macOS Sonoma, work and play on your Mac are even more powerful.\n\n"
+                               + "Elevate your presence on video calls. Access information in all-new ways.")
+        default:
+            panel.show(result: TranslateResult(
+                text: "借助 macOS Sonoma，你在 Mac 上的工作和娱乐体验会更加强大。提升你在视频通话中的存在感，并以全新的方式获取信息。",
+                providerID: "preview",
+                milliseconds: 123),
+                source: source,
+                languages: languages,
+                providerName: "DeepSeek",
+                providerID: "deepseek")
+        }
         Task {
             try? await Task.sleep(for: .seconds(1))
             print("[frames] \(panel.debugFrames())")
             try? await Task.sleep(for: .seconds(9))
+            exit(0)
+        }
+    }
+    app.run()
+
+case "--ocr-panel":
+    // 用法：--ocr-panel。造一张带文字的图，验图文对照窗的版式与识别框。
+    // BATON_OCR_FILE=<png> 时改用磁盘图片，验真实截图那条路径。
+    MainActor.assumeIsolated {
+        if ProcessInfo.processInfo.environment["BATON_DARK"] == "1" {
+            NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
+        if let path = ProcessInfo.processInfo.environment["BATON_OCR_FILE"],
+           let real = NSImage(contentsOfFile: path),
+           let realCG = real.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            let panel = OCRPanelController()
+            panel.show(image: realCG, lines: [], text: "",
+                       engine: "百度 OCR", copiedHint: nil,
+                       codes: QRScanner.detect(realCG))
+            Task {
+                try? await Task.sleep(for: .seconds(12))
+                exit(0)
+            }
+            app.run()
+        }
+        let size = NSSize(width: 900, height: 520)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        NSColor.white.setFill()
+        NSRect(origin: .zero, size: size).fill()
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 10
+        let body = "修完后的验收（需要重启才生效）\n\n"
+            + "Full access：发「调用 ask_me 工具看看」→ 应该只弹一次，直接是那张 5 字段表单。\n"
+            + "Default：仍然弹两次，先 Allow … run tool（点提交/允许），再 5 字段表单。\n"
+            + "Allow edits：不弹，直接 action=decline。\n\n"
+            + "一个小瑕疵先说明：工具审批那张卡片的按钮写的是 Submit，对「允许运行工具吗」有点不贴切。"
+        (body as NSString).draw(in: NSRect(x: 48, y: 60, width: 804, height: 400),
+                                withAttributes: [
+                                    .font: NSFont.systemFont(ofSize: 21),
+                                    .foregroundColor: NSColor.black,
+                                    .paragraphStyle: paragraph,
+                                ])
+        image.unlockFocus()
+        // BATON_OCR_QR=1：往图里贴一张码，验右侧「识别到二维码」区块和橙色框
+        let qrPayload = "https://baton.app/download?ref=ocr"
+        let qrSide: CGFloat = 200
+        var qrDrawn = false
+        if ProcessInfo.processInfo.environment["BATON_OCR_QR"] == "1",
+           let filter = CIFilter(name: "CIQRCodeGenerator") {
+            filter.setValue(qrPayload.data(using: .utf8), forKey: "inputMessage")
+            filter.setValue("H", forKey: "inputCorrectionLevel")
+            if let output = filter.outputImage {
+                let scaled = output.transformed(
+                    by: CGAffineTransform(scaleX: qrSide / output.extent.width,
+                                          y: qrSide / output.extent.height))
+                let represented = NSCIImageRep(ciImage: scaled)
+                let qr = NSImage(size: represented.size)
+                qr.addRepresentation(represented)
+                image.lockFocus()
+                qr.draw(in: NSRect(x: 640, y: 40, width: qrSide, height: qrSide))
+                image.unlockFocus()
+                qrDrawn = true
+            }
+        }
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            exit(1)
+        }
+        // 画的时候是「点 + 左下原点」，框按「像素 + 左上原点」给，两处都要换算
+        let pixelScale = CGFloat(cgImage.width) / size.width
+        let codes: [QRCode] = qrDrawn
+            ? [QRCode(payload: qrPayload,
+                      rect: CGRect(x: 640 * pixelScale,
+                                   y: (size.height - 40 - qrSide) * pixelScale,
+                                   width: qrSide * pixelScale,
+                                   height: qrSide * pixelScale))]
+            : []
+        var lines: [OCRLine] = []
+        var y: CGFloat = 60
+        for _ in 0..<7 {
+            lines.append(OCRLine(text: "示例行", rect: CGRect(x: 48, y: y, width: 780, height: 26)))
+            y += 52
+        }
+        let panel = OCRPanelController()
+        panel.show(image: cgImage, lines: lines, text: body,
+                   engine: "百度 OCR", copiedHint: "已复制 \(body.count) 个字符",
+                   codes: codes)
+        Task {
+            try? await Task.sleep(for: .seconds(12))
             exit(0)
         }
     }
