@@ -150,6 +150,18 @@ public final class InputSourceService {
         syncFocusWatcher()
     }
 
+    /// 导入配置时整份替换。字段之间互相牵连（enabled / 规则 / 记忆 / 学习候选），
+    /// 逐个 setter 拼不出一份「原样」，所以给一个整份入口。
+    public func replaceSettings(_ new: InputSourceSettings) {
+        settings = new
+        // 导入的可能是别的机器上的旧配置：先清过期学习项、再对一次输入法可用性
+        normalizeLearnedRules()
+        pruneStaleRules()
+        refreshSourceAvailability()
+        persist()
+        syncFocusWatcher()
+    }
+
     /// 传 nil 关掉地址栏规则。
     public func setAddressBarSource(_ sourceID: String?) {
         settings.addressBarSourceID = sourceID

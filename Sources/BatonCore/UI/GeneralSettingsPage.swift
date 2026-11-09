@@ -6,6 +6,8 @@ import AppKit
 @MainActor
 final class GeneralSettingsPage: NSView {
     var onLoginToggle: ((Bool) -> Void)?
+    var onExportConfig: (() -> Void)?
+    var onImportConfig: (() -> Void)?
 
     private let loginSwitch = NSSwitch()
     private let versionLabel = NSTextField(labelWithString: "")
@@ -57,8 +59,25 @@ final class GeneralSettingsPage: NSView {
                 SettingsLayout.row("登录时启动", control: loginSwitch),
             ]),
             SettingsLayout.section("权限", permissionRows),
+            SettingsLayout.section("配置", configRows()),
             SettingsLayout.section("关于", aboutRows()),
         ], in: self)
+    }
+
+    /// 导入导出：换机器、留个底用。只搬设置，不搬历史与密钥。
+    private func configRows() -> [NSView] {
+        let buttons = NSStackView(views: [
+            smallButton("导出配置…", action: #selector(exportConfig)),
+            smallButton("导入配置…", action: #selector(importConfig)),
+        ])
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+
+        return [
+            SettingsLayout.row("导入与导出",
+                               detail: "导出成一份 JSON，换机器时导回去；不含 API Key（在钥匙串里）与剪贴板历史",
+                               control: buttons),
+        ]
     }
 
     /// 版本 + 两个目录入口。出问题时用户第一件事就是找这两处，别让他去翻菜单栏。
@@ -98,6 +117,10 @@ final class GeneralSettingsPage: NSView {
     @objc private func openConfigFolder() {
         open(configFolder, name: "config.open")
     }
+
+    @objc private func exportConfig() { onExportConfig?() }
+
+    @objc private func importConfig() { onImportConfig?() }
 
     @objc private func openLogFolder() {
         open(ActionLog.shared.directory, name: "log.open")

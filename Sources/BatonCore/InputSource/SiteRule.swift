@@ -47,7 +47,7 @@ public struct SiteRule: Codable, Sendable, Equatable, Identifiable {
 public enum SiteRuleMatcher {
     /// 把用户输入或地址栏里的东西收敛成域名。
     ///
-    /// 地址栏给的是 `selier-air-cc.linliang.top:8443/session/xxx`（没有 scheme），
+    /// 地址栏给的是 `dev-box.example.com:8443/session/xxx`（没有 scheme），
     /// 用户可能直接粘 `https://github.com/foo`，两种都要能用。
     public static func normalizeHost(_ raw: String?) -> String? {
         guard var text = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),

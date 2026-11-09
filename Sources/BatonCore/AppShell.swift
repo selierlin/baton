@@ -40,6 +40,7 @@ public final class AppShell: NSObject {
     private let recordingSettings = RecordingSettingsStore()
     private var pinStore: PinStore?
     private var statusItem: NSStatusItem?
+    private var statusMenu: NSMenu?
     private var loginMenuItem: NSMenuItem?
     private var inputSourceMenuItem: NSMenuItem?
     private var smoothScrollMenuItem: NSMenuItem?
@@ -172,7 +173,7 @@ public final class AppShell: NSObject {
     }
 
     private func setRecordingIndicator(_ recording: Bool) {
-        stopRecordingMenuItem?.isEnabled = recording
+        if recording { insertStopRecordingItem() } else { removeStopRecordingItem() }
         guard let button = statusItem?.button else { return }
         if recording {
             button.image = NSImage(systemSymbolName: "record.circle.fill",
@@ -243,7 +244,7 @@ public final class AppShell: NSObject {
     private func perform(_ action: HotkeyAction) {
         ActionLog.action("hotkey", "action=\(action.rawValue) title=\(action.title)")
         switch action {
-        case .annotate: captureAnnotate()
+        case .annotate: captureArea()
         case .pin: capturePin()
         case .scroll: captureScroll()
         case .ruler: showRuler()
@@ -285,15 +286,16 @@ public final class AppShell: NSObject {
 
         let menu = NSMenu()
 
-        // 最常用的两个动作直接摆在外面：菜单栏 App 的价值就是少点一层。
-        // 其余按功能收进子菜单 —— 30 项平铺在一列里，找东西只能靠扫读，等于没有分组。
-        menu.addItem(makeItem("区域截图", action: #selector(captureArea),
-                              symbol: "rectangle.dashed"))
-        menu.addItem(hotkeyItem(.scroll, "长截图", #selector(captureScroll),
-                                symbol: "arrow.down.to.line"))
-        menu.addItem(.separator())
-
-        menu.addItem(submenu("截图", symbol: "camera.viewfinder", items: [
+        // 主入口留在顶层：菜单栏 App 的价值就是少点一层。
+        // 其余截图方式收进「更多截图」——父项若叫「截图」，会和里面的「全屏截图」撞名，
+        // 用户也分不清「找窗口截图该看顶层还是看子菜单」。
+        // 顶层主入口也要挂热键：不挂的话设置里配了组合，菜单右侧却不显示
+        menu.addItem(hotkeyItem(.annotate, "区域截图", #selector(captureArea),
+                                symbol: "rectangle.dashed"))
+        menu.addItem(submenu("更多截图", symbol: "camera.viewfinder", items: [
+            hotkeyItem(.scroll, "长截图", #selector(captureScroll),
+                       symbol: "arrow.down.to.line"),
+            .separator(),
             hotkeyItem(.fullScreen, "全屏截图", #selector(captureFullScreen),
                        symbol: "rectangle.inset.filled"),
             makeItem("窗口截图", action: #selector(captureWindow), symbol: "macwindow"),
@@ -309,11 +311,9 @@ public final class AppShell: NSObject {
                        symbol: "square.and.arrow.down"),
             hotkeyItem(.lastShot, "回溯上一次截图", #selector(restoreLastShot),
                        symbol: "clock.arrow.circlepath"),
-            .separator(),
-            hotkeyItem(.annotate, "区域标注", #selector(captureAnnotate),
-                       symbol: "pencil.tip.crop.circle"),
         ]))
 
+        // 「停止录制」不在这里：录制中它会临时插到菜单最顶部，见 setRecordingIndicator
         menu.addItem(submenu("录制", symbol: "record.circle", items: [
             hotkeyItem(.recordArea, "区域录制", #selector(recordArea),
                        symbol: "rectangle.dashed.badge.record"),
@@ -321,8 +321,6 @@ public final class AppShell: NSObject {
                        symbol: "rectangle.inset.filled"),
             hotkeyItem(.recordWindow, "窗口录制", #selector(recordWindow), symbol: "macwindow"),
             hotkeyItem(.recordApp, "应用录制", #selector(recordApp), symbol: "app.badge"),
-            .separator(),
-            stopRecordingItem(),
         ]))
 
         menu.addItem(submenu("贴图", symbol: "pin", items: [
@@ -333,48 +331,43 @@ public final class AppShell: NSObject {
             makeItem("关闭所有贴图", action: #selector(closeAllPins), symbol: "xmark.circle"),
         ]))
 
-        menu.addItem(submenu("工具", symbol: "wrench.and.screwdriver", items: [
-            hotkeyItem(.ruler, "屏幕尺子", #selector(showRuler), symbol: "ruler"),
+        // 翻译和 OCR 是一件事：把画面（或选中的）文字换成另一种文字。
+        // 以前和尺子、剪贴板一起塞在「工具」里，三件不相干的事互相稀释。
+        // 不用 textformat：这个符号在中文系统下会本地化成「格式」两个字，看着像漏了图标
+        menu.addItem(submenu("文字", symbol: "character.textbox", items: [
             hotkeyItem(.translateSelection, "划词翻译", #selector(translateSelection),
                        symbol: "character.book.closed"),
             hotkeyItem(.translateCapture, "截图翻译", #selector(captureTranslate),
                        symbol: "character.bubble"),
             hotkeyItem(.ocr, "截图 OCR", #selector(captureOCR), symbol: "text.viewfinder"),
-            hotkeyItem(.clipboard, "剪贴板历史", #selector(showClipboard),
-                       symbol: "list.clipboard"),
         ]))
 
-        // 开关类放在「高级」里：低频、又不想每次去设置页里翻
-        var advanced: [NSMenuItem] = []
+        // 剪贴板反查和量尺寸都不属于「文字」，各自平铺在顶层
+        menu.addItem(hotkeyItem(.clipboard, "剪贴板历史", #selector(showClipboard),
+                                symbol: "list.clipboard"))
+        menu.addItem(hotkeyItem(.ruler, "屏幕尺子", #selector(showRuler), symbol: "ruler"))
+
+        // 开关平铺：设置页里也有，但切换频率高，不想每次都开窗口。
+        // 以前塞在「高级」里——那名字让人以为是危险选项，反而没人去点。
+        menu.addItem(.separator())
 
         let login = makeItem("登录时启动", action: #selector(toggleLoginItem),
                              symbol: "power")
         loginMenuItem = login
-        advanced.append(login)
+        menu.addItem(login)
 
         let inputSourceItem = makeItem("按 App 记住输入法", action: #selector(toggleInputSource),
                                        symbol: "keyboard")
         inputSourceItem.state = (inputSource?.isEnabled ?? false) ? .on : .off
         inputSourceMenuItem = inputSourceItem
-        advanced.append(inputSourceItem)
-        advanced.append(makeItem("输入法设置…", action: #selector(showInputSourceSettings),
-                                 symbol: "character.cursor.ibeam"))
+        menu.addItem(inputSourceItem)
 
         let smoothItem = makeItem("平滑滚动（滚轮）", action: #selector(toggleSmoothScroll),
                                   symbol: "scroll")
         smoothItem.state = (smoothScroll?.isEnabled ?? false) ? .on : .off
         smoothItem.toolTip = hub.scrollInterceptionUnavailableReason
         smoothScrollMenuItem = smoothItem
-        advanced.append(smoothItem)
-
-        advanced.append(.separator())
-        advanced.append(makeItem("打开登录项设置…", action: #selector(openLoginSettings),
-                                 symbol: "gearshape.2"))
-        // 排查问题时先看日志：一眼能看到用户点了什么、卡在哪一步
-        advanced.append(makeItem("打开日志文件夹", action: #selector(openLogFolder),
-                                 symbol: "doc.text.magnifyingglass"))
-
-        menu.addItem(submenu("高级", symbol: "slider.horizontal.3", items: advanced))
+        menu.addItem(smoothItem)
 
         menu.addItem(.separator())
         menu.addItem(makeItem("设置…", action: #selector(showPreferencesFromMenu),
@@ -384,6 +377,7 @@ public final class AppShell: NSObject {
 
         item.menu = menu
         statusItem = item
+        statusMenu = menu
     }
 
     /// 菜单点击统一在这里记一条，不用在每个 `@objc` 里各写一行。
@@ -408,13 +402,26 @@ public final class AppShell: NSObject {
         ActionLog.action("menu", "item=\(item.title) selector=\(selector)")
     }
 
-    /// 「停止录制」要留句柄：录制期间才可点
-    private func stopRecordingItem() -> NSMenuItem {
+    /// 「停止录制」随录制状态临时插到菜单最顶上：想停的时候它是最急的动作，
+    /// 藏在「录制」子菜单里要多点一层。停止后连分隔线一起收掉，菜单回到平时的样子。
+    private func insertStopRecordingItem() {
+        guard let statusMenu, stopRecordingMenuItem == nil else { return }
         let item = makeItem("停止录制", action: #selector(stopRecording),
                             symbol: "stop.circle.fill")
-        item.isEnabled = false
         stopRecordingMenuItem = item
-        return item
+        statusMenu.insertItem(item, at: 0)
+        statusMenu.insertItem(.separator(), at: 1)
+    }
+
+    private func removeStopRecordingItem() {
+        guard let statusMenu, let item = stopRecordingMenuItem else { return }
+        if let index = statusMenu.items.firstIndex(of: item) {
+            statusMenu.removeItem(at: index)
+            if index < statusMenu.items.count, statusMenu.items[index].isSeparatorItem {
+                statusMenu.removeItem(at: index)
+            }
+        }
+        stopRecordingMenuItem = nil
     }
 
     /// 收进子菜单的分组。父项自己带图标，展开后每项也有图标，扫读时不用逐个读字。
@@ -497,11 +504,6 @@ public final class AppShell: NSObject {
         inputSourceMenuItem?.state = inputSource.isEnabled ? .on : .off
     }
 
-    /// 页序：通用、滚动、截图、录制、输入法…（按模块分页后别再记下标）
-    @objc private func showInputSourceSettings() {
-        openPreferences(titled: PreferencesWindowController.inputSourceTitle)
-    }
-
     @objc private func toggleSmoothScroll() {
         guard let smoothScroll else { return }
         let target = !smoothScroll.isEnabled
@@ -515,10 +517,6 @@ public final class AppShell: NSObject {
         PermissionCenter.request(.accessibility)
         presentAlert(title: "平滑滚动需要「辅助功能」权限",
                      message: "\(reason)\n\n已打开系统授权入口；授权后请在本菜单重新勾选。")
-    }
-
-    @objc private func openLoginSettings() {
-        loginItem.openSystemSettings()
     }
 
     @objc private func showPreferencesFromMenu() { openPreferences() }
@@ -557,6 +555,8 @@ public final class AppShell: NSObject {
                 self.preferencesHoldingRegular = false
                 self.activation.leaveRegular()
             }
+            created.onExportConfig = { [weak self] in self?.exportConfig() }
+            created.onImportConfig = { [weak self] in self?.importConfig() }
             preferences = created
             prefs = created
         }
@@ -579,9 +579,108 @@ public final class AppShell: NSObject {
         refreshLoginMenuItem()
     }
 
+    // MARK: - 配置导入导出
+
+    private func makeConfigTransfer() -> ConfigTransfer {
+        ConfigTransfer(capture: captureSettings,
+                       scroll: smoothScroll,
+                       recording: recordingSettings,
+                       hotkeys: hotkeyStore,
+                       inputSource: inputSource,
+                       ruler: rulerSettings,
+                       clipboard: ClipboardPrefs.shared)
+    }
+
+    /// 把当前配置写成一份 JSON。设置页的「导出配置…」和 `--config-export` 共用这一条路径。
+    @discardableResult
+    public func writeConfig(to url: URL) throws -> ConfigBundle {
+        let bundle = makeConfigTransfer().makeBundle()
+        try bundle.encoded().write(to: url, options: .atomic)
+        ActionLog.action("config.export", "sections=\(bundle.sectionNames.count) path=\(url.path)")
+        return bundle
+    }
+
+    /// 读一份 JSON 并应用。只装文件里有的模块，装完立刻通知各处重载。
+    @discardableResult
+    public func applyConfig(from url: URL) throws -> ConfigBundle {
+        let bundle = try ConfigBundle.decode(try Data(contentsOf: url))
+        try makeConfigTransfer().apply(bundle)
+        reloadAfterImport()
+        ActionLog.action("config.import", "sections=\(bundle.sectionNames.count) path=\(url.path)")
+        return bundle
+    }
+
+    private func exportConfig() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = Self.configFileName()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            let bundle = try writeConfig(to: url)
+            ModalAlert.notify(title: "配置已导出",
+                              message: "包含：\(bundle.sectionNames.joined(separator: "、"))\n\n"
+                                  + "API Key 不在文件里（存在钥匙串），换机器后要重新填一次。",
+                              name: "config.export")
+        } catch {
+            presentAlert(title: "导出失败", message: error.localizedDescription)
+        }
+    }
+
+    private func importConfig() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        // 先读一遍拿模块清单，确认框里要列给用户看；应用时再读一次文件
+        let bundle: ConfigBundle
+        do {
+            bundle = try ConfigBundle.decode(try Data(contentsOf: url))
+        } catch {
+            presentAlert(title: "无法读取这份配置", message: error.localizedDescription)
+            return
+        }
+
+        let names = bundle.sectionNames.joined(separator: "、")
+        Task { @MainActor in
+            let confirmed = await ModalAlert.confirm(
+                title: "导入配置",
+                message: "将用这份文件覆盖：\(names)\n\n其余模块保持不动，导入后立即生效。",
+                confirm: "导入",
+                name: "config.import",
+                above: preferences?.hostWindow)
+            guard confirmed else { return }
+            do {
+                try self.applyConfig(from: url)
+                ModalAlert.notify(title: "配置已导入", message: "已应用：\(names)",
+                                  name: "config.import", above: self.preferences?.hostWindow)
+            } catch {
+                self.presentAlert(title: "导入中断", message: error.localizedDescription)
+            }
+        }
+    }
+
+    /// 导入后要把刚写进 store 的值送到正在跑的地方：热键重注册、翻译/OCR 重读配置、
+    /// 滚动拦截器按新的开关重建，最后刷新菜单勾选和设置页控件。
+    private func reloadAfterImport() {
+        hub.setScrollInterceptor(makeScrollInterceptor())
+        translator?.reloadSettings()
+        registerHotkeys()
+        refreshToggleStates()
+        preferences?.refresh()
+    }
+
+    private static func configFileName() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return "Baton 配置 \(formatter.string(from: Date())).json"
+    }
+
     // MARK: - 截图
 
-    // 区域截图和区域标注走同一条原地流程：框完先给工具条，
+    // 区域截图框完先给工具条，标注是工具条上的一个工具；
     // 复制/保存/贴图由用户点按钮决定，不再「一松手就进剪贴板」。
     @objc private func captureArea() { capture(intent: .area, action: .edit) }
     @objc private func captureFullScreen() {
@@ -638,7 +737,6 @@ public final class AppShell: NSObject {
     @objc private func captureElement() { capture(intent: .element) }
     @objc private func captureTranslate() { capture(intent: .area, action: .translate) }
     @objc private func captureOCR() { capture(intent: .area, action: .ocr(silent: false)) }
-    @objc private func captureAnnotate() { capture(intent: .area, action: .edit) }
     @objc private func capturePin() { capture(intent: .area, action: .pin) }
 
     /// 从磁盘挑一张图贴出来。Finder 直接拖到已有贴图上也是这条路。
@@ -999,13 +1097,6 @@ capturesAudio: recordingSettings.capturesAudio,
     @objc private func quit() {
         ActionLog.app("quit", "pins=\(pinController.count)")
         NSApp.terminate(nil)
-    }
-
-    /// 日志目录直接开在 Finder 里——用户遇到问题，让他自己把 baton.log 发过来就行。
-    @objc private func openLogFolder() {
-        ActionLog.action("log.reveal", ActionLog.shared.directory.path)
-        NSWorkspace.shared.selectFile(ActionLog.shared.fileURL.path,
-                                     inFileViewerRootedAtPath: ActionLog.shared.directory.path)
     }
 }
 

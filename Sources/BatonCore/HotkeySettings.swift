@@ -26,7 +26,7 @@ public enum HotkeyAction: String, CaseIterable, Sendable {
 
     public var title: String {
         switch self {
-        case .annotate: return "区域标注（截图）"
+        case .annotate: return "区域截图"
         case .pin: return "截图贴图"
         case .scroll: return "长截图"
         case .ruler: return "屏幕尺子"

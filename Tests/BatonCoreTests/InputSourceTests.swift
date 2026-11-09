@@ -185,8 +185,8 @@ final class InputSourceRowOrderTests: XCTestCase {
 final class SiteRuleMatcherTests: XCTestCase {
     func testNormalizeHostFromAddressBarValue() {
         // 地址栏给的就是这种：没有 scheme，带端口和路径
-        XCTAssertEqual(SiteRuleMatcher.normalizeHost("selier-air-cc.linliang.top:8443/session/abc"),
-                       "selier-air-cc.linliang.top")
+        XCTAssertEqual(SiteRuleMatcher.normalizeHost("dev-box.example.com:8443/session/abc"),
+                       "dev-box.example.com")
         XCTAssertEqual(SiteRuleMatcher.normalizeHost("https://GitHub.com/selierlin/baton"),
                        "github.com")
         XCTAssertEqual(SiteRuleMatcher.normalizeHost("www.google.com"), "google.com")
@@ -330,17 +330,17 @@ final class SiteRuleLearningTests: XCTestCase {
     func testNormalizeMergesDuplicateLearnedRules() {
         let old = Date().addingTimeInterval(-10 * 24 * 3600)
         var rules = [
-            SiteRule(host: "selier-mini-cc.linliang.top",
+            SiteRule(host: "dev-box.example.com",
                      keyword: "输入 / 调用命令，@ 选择文件，或向 Pi 提问...",
                      sourceID: "doubao", learned: true, createdAt: old),
-            SiteRule(host: "selier-mini-cc.linliang.top",
+            SiteRule(host: "dev-box.example.com",
                      keyword: "输入 / 调用命令，@ 选择文件，或向 WorkBuddy 提问...",
                      sourceID: "doubao", learned: true, createdAt: Date(), lastUsed: Date()),
             SiteRule(host: "mp.lemobar.com", keyword: "⌘ + K", sourceID: "abc", learned: true),
         ]
         SiteRuleLearning.normalizeLearned(&rules)
         XCTAssertEqual(rules.count, 2)
-        let merged = rules.first { $0.host == "selier-mini-cc.linliang.top" }
+        let merged = rules.first { $0.host == "dev-box.example.com" }
         XCTAssertEqual(merged?.keyword, "输入 / 调用命令")
         XCTAssertEqual(merged?.createdAt, old)
         XCTAssertNotNil(merged?.lastUsed)
