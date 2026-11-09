@@ -158,6 +158,13 @@ public final class BatonDatabase: Sendable {
             try db.execute(sql: "ALTER TABLE item ADD COLUMN sourceBundleID TEXT")
         }
 
+        // v4：贴图的缩略图态。frame 可能就是缩略图尺寸，还原目标（baseZoom）和
+        // 是否处于缩略图得单独记，否则重启后 baseZoom 会被缩略倍率顶掉，按 R 没反应。
+        migrator.registerMigration("v4") { db in
+            try db.execute(sql: "ALTER TABLE pin_instance ADD COLUMN baseZoom REAL")
+            try db.execute(sql: "ALTER TABLE pin_instance ADD COLUMN thumbnail INTEGER NOT NULL DEFAULT 0")
+        }
+
         return migrator
     }
 

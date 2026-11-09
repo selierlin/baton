@@ -105,11 +105,154 @@ final class PinWindowKeyTests: XCTestCase {
         XCTAssertEqual(controller.debugFrame.height, normal.height, accuracy: 1)
     }
 
+    /// 缩略图态要连「还原目标」一起落库，否则重启后 baseZoom 被缩略倍率顶掉，R 变成空操作。
+    func testThumbnailStateIsPersistedWithBaseZoom() throws {
+        let context = CGContext(data: nil, width: 800, height: 400,
+                                bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 800, height: 400))
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("baton-pin-thumb-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        databaseDirectory = directory
+        let store = PinStore(clipboard: ClipboardStore(database: try BatonDatabase(directory: directory)))
+
+        let controller = makeController(image: context.makeImage()!, store: store)
+        let normal = controller.debugFrame
+        XCTAssertTrue(controller.handleKey(key(15)))
+        XCTAssertEqual(max(controller.debugFrame.width, controller.debugFrame.height), 160, accuracy: 1)
+
+        // 落库是 0.4s 防抖，等它跑完
+        RunLoop.current.run(until: Date().addingTimeInterval(1.0))
+
+        let stored = try XCTUnwrap(store.loadAll().first)
+        XCTAssertTrue(stored.isThumbnail, "缩略图态要落库")
+        XCTAssertEqual(stored.baseZoom ?? 0, normal.width / 800, accuracy: 0.01, "还原目标要落库")
+        XCTAssertEqual(max(stored.frame.width, stored.frame.height), 160, accuracy: 1.5)
+    }
+
+    /// 旧版本把缩略图尺寸写成了真实尺寸：恢复时要认出来，R 才能放回适配倍率。
+    func testRestorePlanRecoversLegacyThumbnailFrame() {
+        let base = CGSize(width: 925, height: 700)
+        let plan = PinWindowController.restorePlan(frame: CGRect(x: 0, y: 0, width: 160, height: 121),
+                                                   baseSize: base, fitZoom: 1)
+        XCTAssertTrue(plan.isThumbnail)
+        XCTAssertEqual(plan.baseZoom, 1)
+        XCTAssertEqual(plan.zoom, 160 / 925, accuracy: 0.001)
+    }
+
+    func testRestorePlanKeepsNormalFrame() {
+        let base = CGSize(width: 925, height: 700)
+        let frame = CGRect(x: 100, y: 100, width: 462.5, height: 350)
+        let plan = PinWindowController.restorePlan(frame: frame, baseSize: base, fitZoom: 1)
+        XCTAssertFalse(plan.isThumbnail)
+        XCTAssertEqual(plan.baseZoom, plan.zoom, accuracy: 0.0001)
+    }
+
+    /// 原图本身就不比 160 大时，160 点就是它的正常尺寸，不能当成缩略图。
+    func testRestorePlanDoesNotMistakeSmallSourceForThumbnail() {
+        let plan = PinWindowController.restorePlan(frame: CGRect(x: 0, y: 0, width: 160, height: 120),
+                                                   baseSize: CGSize(width: 120, height: 90), fitZoom: 1)
+        XCTAssertFalse(plan.isThumbnail)
+    }
+
     func testPlainEqualsZoomsIn() throws {
         let (controller, _) = try makePin()
         let before = controller.debugFrame.width
         controller.handleKey(key(24))
         XCTAssertGreaterThan(controller.debugFrame.width, before)
+    }
+
+    /// 滚轮缩放后，R 收起再按回来要回到滚动后的大小，而不是创建时的大小。
+    func testScrollZoomBecomesRestoreTarget() throws {
+        let (controller, _) = try makePin(width: 800, height: 400)
+        XCTAssertEqual(controller.debugZoom, 1, accuracy: 0.001)
+
+        controller.debugScroll(lines: 5)
+        let zoomed = controller.debugZoom
+        XCTAssertGreaterThan(zoomed, 1.1, "滚轮要能放大")
+        XCTAssertEqual(controller.debugFrame.width, 800 * zoomed, accuracy: 1)
+
+        XCTAssertTrue(controller.handleKey(key(15)))
+        XCTAssertEqual(max(controller.debugFrame.width, controller.debugFrame.height), 160, accuracy: 1)
+
+        XCTAssertTrue(controller.handleKey(key(15)))
+        XCTAssertEqual(controller.debugZoom, zoomed, accuracy: 0.001, "R 要还原到滚出来的大小")
+    }
+
+    func testScrollDownShrinks() throws {
+        let (controller, _) = try makePin(width: 800, height: 400)
+        let before = controller.debugZoom
+        controller.debugScroll(lines: -5)
+        XCTAssertLessThan(controller.debugZoom, before)
+    }
+
+    /// 缩略态里滚一下就退回原样再继续放大，别让还原目标跟着缩水。
+    func testScrollFromThumbnailReturnsToBaseFirst() throws {
+        let (controller, _) = try makePin(width: 800, height: 400)
+        XCTAssertTrue(controller.handleKey(key(15)))
+        XCTAssertTrue(controller.debugSnapshot.isThumbnail)
+
+        controller.debugScroll(lines: 5)
+        XCTAssertFalse(controller.debugSnapshot.isThumbnail, "滚一下就该退出缩略态")
+        XCTAssertGreaterThan(controller.debugZoom, 1, "是在原样倍率上继续放大，不是从缩略倍率放大")
+
+        XCTAssertTrue(controller.handleKey(key(15)))
+        XCTAssertEqual(max(controller.debugFrame.width, controller.debugFrame.height), 160, accuracy: 1)
+        XCTAssertTrue(controller.handleKey(key(15)))
+        XCTAssertGreaterThan(controller.debugZoom, 1)
+    }
+
+    /// 缩略态里滚一下要围着指针长大。
+    ///
+    /// 这条以前是坏的：先回原样、再叠一格分成两次缩放，第二次拿的还是缩略窗口里的
+    /// 坐标，窗口已经变大，同一个点就落到别处，图被甩出屏幕——再按 R 收到屏幕外，
+    /// 用户看到的就是「贴图不见了」。
+    func testScrollFromThumbnailKeepsPointerAnchor() throws {
+        let (controller, _) = try makePin(width: 800, height: 400)
+        XCTAssertTrue(controller.handleKey(key(15)))
+        let thumbnail = controller.debugFrame
+        XCTAssertEqual(thumbnail.width, 160, accuracy: 1)
+
+        // 缩略窗口 160×80，挑一个靠边但不贴角的点，坐标换算错了才能露出来
+        let local = NSPoint(x: 120, y: 60)
+        let anchor = CGPoint(x: thumbnail.minX + local.x, y: thumbnail.minY + local.y)
+        controller.debugZoomGesture(step: 0.1, at: local)
+
+        // 目标倍率 = 原样 1 × 1.1；从缩略档 0.2 涨到 1.1，锚点按 5.5 倍撑开
+        XCTAssertEqual(controller.debugZoom, 1.1, accuracy: 0.001)
+        XCTAssertFalse(controller.debugSnapshot.isThumbnail)
+        XCTAssertEqual(controller.debugFrame.width, 800 * 1.1, accuracy: 2)
+        XCTAssertEqual(controller.debugFrame.minX, anchor.x - local.x * 5.5, accuracy: 2,
+                       "指针那一点缩放前后得钉在同一处")
+        XCTAssertEqual(controller.debugFrame.minY, anchor.y - local.y * 5.5, accuracy: 2)
+    }
+
+    /// 缩略态靠加粗边框提示「图还开着」，退出缩略态要跟着退回细边框。
+    func testThumbnailEmphasizesBorder() throws {
+        let (controller, _) = try makePin(width: 800, height: 400)
+        XCTAssertFalse(controller.debugBorderEmphasized)
+
+        XCTAssertTrue(controller.handleKey(key(15)))
+        XCTAssertTrue(controller.debugSnapshot.isThumbnail)
+        XCTAssertTrue(controller.debugBorderEmphasized, "缩略态要加粗边框")
+
+        XCTAssertTrue(controller.handleKey(key(15)))
+        XCTAssertFalse(controller.debugBorderEmphasized, "放回原样边框退回细的")
+    }
+
+    /// 缩略态里滚一下也算退出，边框同样要退回去
+    func testScrollingOutOfThumbnailDropsBoldBorder() throws {
+        let (controller, _) = try makePin(width: 800, height: 400)
+        XCTAssertTrue(controller.handleKey(key(15)))
+        XCTAssertTrue(controller.debugBorderEmphasized)
+
+        controller.debugScroll(lines: 5)
+        XCTAssertFalse(controller.debugSnapshot.isThumbnail)
+        XCTAssertFalse(controller.debugBorderEmphasized)
     }
 
     func testArrowsMoveWindowByOnePoint() throws {

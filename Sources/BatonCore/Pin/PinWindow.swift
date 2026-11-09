@@ -146,6 +146,8 @@ public final class PinController {
                                                  opacity: stored.opacity,
                                                  store: store,
                                                  pinID: stored.id,
+                                                 baseZoom: stored.baseZoom,
+                                                 isThumbnail: stored.isThumbnail,
                                                  onClose: { [weak self] id in
                 self?.pins.removeAll { $0.id == id }
             })
@@ -202,6 +204,9 @@ final class PinWindowController: NSObject, NSWindowDelegate {
     private let initialOpacity: Double
     private let store: PinStore?
     private var pinID: String?
+    /// 库里记下的还原倍率与缩略图态（老记录为 nil / false）。
+    private let storedBaseZoom: CGFloat?
+    private let storedThumbnail: Bool
     private let onClose: (UUID) -> Void
     /// 往这张贴图上丢文件：交给 PinController 再钉一张，自己不动。
     var onDropFile: ((URL) -> Void)?
@@ -219,8 +224,46 @@ final class PinWindowController: NSObject, NSWindowDelegate {
     /// 缩略图模式把长边收到这么多点：够看清是什么图，又不至于挡着内容。
     private static let thumbnailLongest: CGFloat = 160
 
+    /// 恢复一行贴图时的倍率计划。
+    struct RestorePlan: Equatable {
+        var zoom: CGFloat
+        /// R 从缩略图还原的目标倍率。
+        var baseZoom: CGFloat
+        /// 这行 frame 是缩略图态写下的（旧版本会把缩略图尺寸当真实尺寸存），R 得能放回去。
+        var isThumbnail: Bool
+    }
+
+    /// 屏内「适配」倍率：太大就缩到屏宽的 80%。
+    static func fitZoom(baseSize: CGSize, in visible: CGRect) -> CGFloat {
+        guard baseSize.width > 0, baseSize.height > 0 else { return 1 }
+        return min(1, (visible.width * 0.8) / baseSize.width, (visible.height * 0.8) / baseSize.height)
+    }
+
+    /// 从库里恢复时算倍率。
+    ///
+    /// 新记录直接读 `baseZoom` / `thumbnail`，与关闭前完全一致。
+    /// 老记录没有这两列：正常情况「存下来的 frame 就是真实尺寸」，`baseZoom` 取它；
+    /// 但旧版本在缩略图态也写当前 frame，重启后 `baseZoom` 就成了缩略图的倍率，
+    /// 再按 R 时目标倍率等于当前倍率，看起来就是「按了没反应」。
+    /// 长边正好 160 点且原图比它大，就认定是缩略图态，还原目标按屏内适配算。
+    static func restorePlan(frame: CGRect, baseSize: CGSize, fitZoom: CGFloat,
+                            baseZoom: CGFloat? = nil, isThumbnail: Bool = false) -> RestorePlan {
+        let zoom = frame.width / max(baseSize.width, 1)
+        if let baseZoom {
+            return RestorePlan(zoom: zoom, baseZoom: baseZoom, isThumbnail: isThumbnail)
+        }
+        let longest = max(frame.width, frame.height)
+        let sourceLongest = max(baseSize.width, baseSize.height)
+        let stranded = abs(longest - thumbnailLongest) <= 2 && sourceLongest > thumbnailLongest
+        return stranded
+            ? RestorePlan(zoom: zoom, baseZoom: fitZoom, isThumbnail: true)
+            : RestorePlan(zoom: zoom, baseZoom: zoom, isThumbnail: false)
+    }
+
     init(source: PinImageSource, scale: CGFloat, anchor: CGRect?, initialFrame: CGRect?,
-         opacity: Double, store: PinStore?, pinID: String?, onClose: @escaping (UUID) -> Void) {
+         opacity: Double, store: PinStore?, pinID: String?,
+         baseZoom: CGFloat? = nil, isThumbnail: Bool = false,
+         onClose: @escaping (UUID) -> Void) {
         self.source = source
         self.imageScale = max(scale, 1)
         self.baseSize = CGSize(width: source.pixelSize.width / max(scale, 1),
@@ -230,6 +273,8 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         self.initialOpacity = opacity
         self.store = store
         self.pinID = pinID
+        self.storedBaseZoom = baseZoom
+        self.storedThumbnail = isThumbnail
         self.onClose = onClose
         super.init()
     }
@@ -251,13 +296,22 @@ final class PinWindowController: NSObject, NSWindowDelegate {
             panel = PinPanel(contentRect: clamped(initialFrame),
                              styleMask: [.borderless, .nonactivatingPanel],
                              backing: .buffered, defer: false)
-            zoom = initialFrame.width / max(baseSize.width, 1)
+            let visible = (screenForAnchor() ?? NSScreen.main)?.visibleFrame
+                ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+            let plan = Self.restorePlan(frame: panel.frame,
+                                        baseSize: baseSize,
+                                        fitZoom: Self.fitZoom(baseSize: baseSize, in: visible),
+                                        baseZoom: storedBaseZoom,
+                                        isThumbnail: storedThumbnail)
+            zoom = plan.zoom
+            baseZoom = plan.baseZoom
+            isThumbnailMode = plan.isThumbnail
         } else {
             panel = PinPanel(contentRect: initialRect(),
                              styleMask: [.borderless, .nonactivatingPanel],
                              backing: .buffered, defer: false)
+            baseZoom = zoom
         }
-        baseZoom = zoom
 
         panel.isFloatingPanel = true
         panel.level = .floating
@@ -273,11 +327,15 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         panel.delegate = self
 
         let view = PinView(source: source)
-        view.onZoom = { [weak self] delta in self?.changeZoom(by: delta) }
+        view.onZoom = { [weak self] step, anchor in
+            self?.zoomByGesture(step: step, at: anchor)
+        }
         view.onDoubleClick = { [weak self] in self?.toggleActualSize() }
         view.onKey = { [weak self] event in self?.handleKey(event) ?? false }
         view.onMenu = { [weak self] event in self?.showMenu(for: event) ?? false }
         view.onDropFile = { [weak self] url in self?.onDropFile?(url) }
+        // 缩略态那一圈加粗边框得跟着视图一起立起来（恢复出来的缩略图直接就是加粗态）
+        view.emphasizedBorder = isThumbnailMode
         panel.contentView = view
         self.view = view
 
@@ -297,7 +355,8 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         if pinID == nil, let store, let image = source.full() {
             pinID = try? store.save(image: image, scale: imageScale, frame: panel.frame,
                                     screenUUID: Self.screenUUID(panel.screen),
-                                    opacity: Double(panel.alphaValue))
+                                    opacity: Double(panel.alphaValue),
+                                    baseZoom: baseZoom)
             if let pinID {
                 // 先把 blob 认回来再丢原图：显示（换桶重新解）和导出（原图）
                 // 都靠它，否则缩放一下贴图就空白、空格也建不出画布。
@@ -452,6 +511,22 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         return true
     }
 
+    /// 诊断用：合成一次滚轮事件（正数放大），走的是真 `scrollWheel` 那条路。
+    func debugScroll(lines: Int32) {
+        guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1,
+                               wheel1: lines, wheel2: 0, wheel3: 0),
+              let event = NSEvent(cgEvent: cg),
+              let view
+        else { return }
+        view.scrollWheel(with: event)
+    }
+
+    /// 诊断用：在窗口内指定一点做一次缩放（滚轮和捏合最终都落到这里）。
+    /// 合成事件带不了窗口内坐标，指针位置只能这样喂进来。
+    func debugZoomGesture(step: CGFloat, at local: NSPoint) {
+        zoomByGesture(step: step, at: local)
+    }
+
     /// 诊断用：窗口里这一点归谁处理（点用窗口坐标）
     func debugHitView(at point: CGPoint) -> NSView? {
         window?.contentView?.hitTest(point)
@@ -485,24 +560,35 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         scheduleSave()
     }
 
-    /// 缩略图模式：缩到长边 160pt，再按 R 回到贴图创建时的倍率。
+    /// 缩略图模式：缩到长边 160pt，再按 R 回到「原样」。
     ///
-    /// 还原的目标是 `baseZoom` 而不是「进缩略图前」：中途滚轮/按键放大是临时查看，
-    /// 按两次 R 的语义是「收起来 / 放回原处」，把放大后的倍率当原样会越按越大。
+    /// 「原样」是最后一次手动缩放（滚轮 / 键位 / 双击）后的大小，见 `applyZoom`。
+    /// 这样滚到满意尺寸 → R 收起 → R 放回，回到的正是刚调好的那一档。
     private func toggleThumbnail() {
         annotator?.setEditing(false)
         if isThumbnailMode {
-            isThumbnailMode = false
+            setThumbnailMode(false)
             setZoom(baseZoom)
             return
         }
         let longest = max(baseSize.width, baseSize.height)
         guard longest > 0 else { return }
         let target = min(zoom, Self.thumbnailLongest / longest)
-        guard target < zoom - 0.001 else { return }
-        isThumbnailMode = true
-        setZoom(target)
+        // 已经比缩略图还小时不再缩，但状态照进：再按一下照样能放回原样。
+        setThumbnailMode(true)
+        if target < zoom - 0.001 { setZoom(target) }
     }
+
+    /// 缩略态 = 加粗边框。状态和边框一起切，避免「收起来了但没有加粗」这种半截状态。
+    ///
+    /// 用边框而不是动画提示：不带定时器、不挪窗口，缩略图摆多久都不烧 CPU。
+    private func setThumbnailMode(_ on: Bool) {
+        isThumbnailMode = on
+        view?.emphasizedBorder = on
+    }
+
+    /// 诊断用：缩略态那圈加粗边框有没有真的交给视图去画。
+    var debugBorderEmphasized: Bool { view?.emphasizedBorder ?? false }
 
     // MARK: - 位置与倍率
 
@@ -510,7 +596,7 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         let screen = screenForAnchor()
         let visible = screen?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
         // 太大的图先缩到屏内，否则贴图会盖满整块屏幕
-        let fit = min(1, (visible.width * 0.8) / baseSize.width, (visible.height * 0.8) / baseSize.height)
+        let fit = Self.fitZoom(baseSize: baseSize, in: visible)
         zoom = fit
         let size = CGSize(width: baseSize.width * fit, height: baseSize.height * fit)
 
@@ -539,44 +625,75 @@ final class PinWindowController: NSObject, NSWindowDelegate {
                       height: frame.height)
     }
 
-    private func changeZoom(by delta: CGFloat) {
-        applyZoom(zoom + delta)
+    /// 滚轮 / 触控板捏合：按比例乘，锚在指针那一点，图围着指针长大缩小。
+    ///
+    /// 手动调过的倍率就是新的「原样」——滚到满意大小后按 R 收起来，再按一下回到的是
+    /// 这个大小，而不是创建贴图那一刻的大小。否则每次调完都要重新滚一遍。
+    private func zoomByGesture(step: CGFloat, at anchorInWindow: NSPoint) {
+        guard let window else { return }
+        // 缩略态下一滚就退回原样再继续；往里缩（step < 0）没有更小的去处，不理。
+        if isThumbnailMode, step <= 0 { return }
+        // 锚点只在改窗口之前换算一次。缩略态先回原样再叠这一格如果分两步，
+        // 第二步拿的还是缩略窗口里的坐标，窗口已经变大，同一个坐标就指到别处，
+        // 图会整个甩出屏幕（再按 R 收到屏幕外，看起来就是贴图没了）。
+        let anchor = window.convertPoint(toScreen: anchorInWindow)
+        let from = isThumbnailMode ? baseZoom : zoom
+        applyZoom(from * (1 + step), remember: true, screenAnchor: anchor)
     }
 
     /// 键盘缩放按比例：`=` 三次再 `-` 三次要回到原样。
     /// 按「当前值的 10%」加减做不到这点——放大到 1.331 之后连减三次是 0.970，
     /// 来回几次就漂到别的倍率上，用户只会觉得键位不听话。
     private func changeZoom(byRatio ratio: CGFloat) {
-        applyZoom(zoom * ratio)
+        applyZoom(zoom * ratio, remember: true)
     }
 
-    private func applyZoom(_ value: CGFloat) {
+    /// - Parameters:
+    ///   - remember: 这次缩放要不要成为新的「原样」（R 从缩略图还原的目标）。
+    ///     手动缩放传 true；缩略图自己的进出传 false，否则目标倍率会被缩略倍率顶掉。
+    ///   - screenAnchor: 屏幕坐标里的锚点，缩放时这一点不动。默认窗口中心。
+    ///     要锚在指针上的调用方得自己先换算好再传进来——窗口一变，
+    ///     窗口内坐标就不再指向同一个点了。
+    private func applyZoom(_ value: CGFloat, remember: Bool = false, screenAnchor: CGPoint? = nil) {
         guard let window else { return }
         // 下限放到 0.05：缩略图模式要把长边收到 160pt，大图那一档会低于 0.25
         let next = min(max(value, 0.05), 4)
         guard abs(next - zoom) > 0.001 else { return }
 
-        // 以窗口中心为锚点缩放
-        let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+        let previous = zoom
         zoom = next
-        let size = CGSize(width: baseSize.width * zoom, height: baseSize.height * zoom)
-        let frame = CGRect(x: center.x - size.width / 2,
-                           y: center.y - size.height / 2,
-                           width: size.width,
-                           height: size.height)
-        window.setFrame(frame, display: true, animate: false)
+        if remember {
+            // 手动改尺寸就是退出缩略态，边框跟着回到细的
+            if isThumbnailMode { setThumbnailMode(false) }
+            baseZoom = next
+        }
+
+        let anchor = screenAnchor ?? CGPoint(x: window.frame.midX, y: window.frame.midY)
+        window.setFrame(frame(forZoom: next, anchoredAt: anchor, from: previous),
+                        display: true, animate: false)
         scheduleSave()
     }
 
+    private func frame(forZoom value: CGFloat, anchoredAt anchor: CGPoint,
+                       from previous: CGFloat) -> CGRect {
+        let frame = window?.frame ?? .zero
+        let ratio = value / max(previous, 0.0001)
+        let size = CGSize(width: baseSize.width * value, height: baseSize.height * value)
+        let origin = CGPoint(x: anchor.x - (anchor.x - frame.minX) * ratio,
+                             y: anchor.y - (anchor.y - frame.minY) * ratio)
+        return CGRect(origin: origin, size: size)
+    }
+
     private func setZoom(_ value: CGFloat) {
-        changeZoom(by: value - zoom)
+        applyZoom(value)
     }
 
     /// 双击：100% ⇄ 适配屏幕
     private func toggleActualSize() {
         let visible = window?.screen?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
         let fit = min(1, (visible.width * 0.8) / baseSize.width, (visible.height * 0.8) / baseSize.height)
-        setZoom(abs(zoom - 1) < 0.01 ? fit : 1)
+        // 双击也是「手动定尺寸」，和 R 的还原目标对齐，不然按一次 R 就跳回旧大小
+        applyZoom(abs(zoom - 1) < 0.01 ? fit : 1, remember: true)
     }
 
     private func scheduleSave() {
@@ -585,7 +702,9 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         let work = DispatchWorkItem { [weak self] in
             guard let self, let window = self.window, let pinID = self.pinID else { return }
             self.store?.updateFrame(id: pinID, frame: window.frame,
-                                    screenUUID: Self.screenUUID(window.screen))
+                                    screenUUID: Self.screenUUID(window.screen),
+                                    baseZoom: self.baseZoom,
+                                    thumbnail: self.isThumbnailMode)
         }
         pendingSave = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
@@ -709,7 +828,8 @@ final class PinWindowController: NSObject, NSWindowDelegate {
     }
 
     @objc private func applyPresetZoom(_ sender: NSMenuItem) {
-        setZoom(CGFloat(sender.tag) / 100)
+        // 菜单里点定倍率也是手动定尺寸，R 还原跟着它走
+        applyZoom(CGFloat(sender.tag) / 100, remember: true)
     }
 
     @objc private func applyOpacity(_ sender: NSMenuItem) {
@@ -745,7 +865,7 @@ private final class PinView: NSView {
     /// 按窗口像素重采样后的显示位图，和 bounds 在设备像素上一一对应。
     private var displayImage: CGImage?
     private var displayBucket = 0
-    var onZoom: ((CGFloat) -> Void)?
+    var onZoom: ((CGFloat, NSPoint) -> Void)?
     var onDoubleClick: (() -> Void)?
     /// 键位交给控制器（贴图的键位表和截图态不一样，实现只该有一份）。
     var onKey: ((NSEvent) -> Bool)?
@@ -754,6 +874,14 @@ private final class PinView: NSView {
 
     /// 诊断用：显示位图有没有解出来。
     var hasContent: Bool { displayImage != nil }
+
+    /// 缩略态那圈加粗边框。纯绘制，没有动画、没有定时器，缩略图摆一整天也不耗 CPU。
+    var emphasizedBorder = false {
+        didSet {
+            guard emphasizedBorder != oldValue else { return }
+            needsDisplay = true
+        }
+    }
 
     init(source: PinImageSource) {
         self.source = source
@@ -820,17 +948,41 @@ private final class PinView: NSView {
             AnnotateRenderer.drawImage(displayImage, in: bounds, context: context)
         }
 
-        // 细边框：和图内容区分开，浅色截图上也能看出边界
-        NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.35).setStroke()
-        let border = NSBezierPath(rect: bounds.insetBy(dx: 0.5, dy: 0.5))
-        border.lineWidth = 1
-        border.stroke()
+        // 边框：细线只用来和图内容分开；缩略态换成粗圈，静止的，不花一帧定时器
+        if emphasizedBorder {
+            // 粗黑圈 + 内侧白线：深色截图和浅色截图上都能一眼看到
+            NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.85).setStroke()
+            let outer = NSBezierPath(rect: bounds.insetBy(dx: 1.5, dy: 1.5))
+            outer.lineWidth = 3
+            outer.stroke()
+
+            NSColor(white: 1, alpha: 0.9).setStroke()
+            let inner = NSBezierPath(rect: bounds.insetBy(dx: 4, dy: 4))
+            inner.lineWidth = 1
+            inner.stroke()
+        } else {
+            // 细边框：和图内容区分开，浅色截图上也能看出边界
+            NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.35).setStroke()
+            let border = NSBezierPath(rect: bounds.insetBy(dx: 0.5, dy: 0.5))
+            border.lineWidth = 1
+            border.stroke()
+        }
     }
 
     override func scrollWheel(with event: NSEvent) {
-        // 触控板给的是像素级增量，滚轮给的是行数，两者量纲差一个数量级
-        let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY / 300 : event.scrollingDeltaY / 40
-        onZoom?(delta)
+        // 触控板给的是像素级增量（一格 ≈ 10 点、一次滑动几十个事件），
+        // 滚轮给的是行数（一格 1 行）。两者量纲差一个数量级，分开换算成比例步长。
+        // 一格滚轮约 8%，单次事件封顶 12%：甩一下触控板不至于把图弹出屏幕。
+        let step = event.hasPreciseScrollingDeltas
+            ? event.scrollingDeltaY / 500
+            : event.scrollingDeltaY * 0.08
+        onZoom?(min(max(step, -0.12), 0.12), event.locationInWindow)
+    }
+
+    /// 触控板双指捏合：`magnification` 已经是「相对上一帧的比例」（捏开 0.1 就是放大 10%），
+    /// 逐帧乘上去，手指张多大图就长多大，不用再换算量纲。
+    override func magnify(with event: NSEvent) {
+        onZoom?(min(max(event.magnification, -0.12), 0.12), event.locationInWindow)
     }
 
     /// 只读态的拖拽锚点：屏幕坐标 + 窗口原点。
@@ -848,6 +1000,11 @@ private final class PinView: NSView {
     override var mouseDownCanMoveWindow: Bool { allowsWindowDrag }
 
     override func mouseDown(with event: NSEvent) {
+        // 点哪张就把键盘收归哪张：nonactivating panel 默认点了不取 key，
+        // 多张并存时 R / 空格会落到上一张身上（看起来就是「按了没反应」）。
+        window?.makeKey()
+        window?.makeFirstResponder(self)
+
         if event.clickCount >= 2 {
             onDoubleClick?()
             return

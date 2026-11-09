@@ -14,6 +14,10 @@ public struct PinRecord: Sendable, Codable, FetchableRecord, PersistableRecord {
     public var zOrder: Int
     public var opacity: Double
     public var createdAt: Double
+    /// R 从缩略图还原的目标倍率。老记录没有，恢复时按长边 160 点判断。
+    public var baseZoom: Double?
+    /// 当前是不是缩略图态（frame 是缩略图尺寸）。
+    public var thumbnail: Bool
 }
 
 public struct StoredPin: Sendable {
@@ -24,6 +28,9 @@ public struct StoredPin: Sendable {
     public let scale: CGFloat
     public let frame: CGRect
     public let opacity: Double
+    /// R 的还原目标；nil 表示老记录，交给调用方按缩略图尺寸推断。
+    public let baseZoom: CGFloat?
+    public let isThumbnail: Bool
 
     /// 原图，按需从 blob 解码。
     public var image: CGImage? { source.full() }
@@ -44,7 +51,8 @@ public final class PinStore: Sendable {
 
     @discardableResult
     public func save(image: CGImage, scale: CGFloat, frame: CGRect,
-                     screenUUID: String?, opacity: Double = 1) throws -> String {
+                     screenUUID: String?, opacity: Double = 1,
+                     baseZoom: CGFloat? = nil) throws -> String {
         guard let png = Self.pngData(image) else { throw PinStoreError.encodeFailed }
         let hash = PasteboardReader.sha256(png)
         let draft = ClipDraft(kind: .image,
@@ -69,7 +77,9 @@ public final class PinStore: Sendable {
                                screenUUID: screenUUID,
                                zOrder: try nextZOrder(),
                                opacity: opacity,
-                               createdAt: Date().timeIntervalSince1970)
+                               createdAt: Date().timeIntervalSince1970,
+                               baseZoom: baseZoom.map(Double.init),
+                               thumbnail: false)
         try db.dbQueue.write { conn in
             try record.insert(conn)
         }
@@ -92,10 +102,19 @@ public final class PinStore: Sendable {
         return db.blobURL(forRelativePath: path)
     }
 
-    public func updateFrame(id: String, frame: CGRect, screenUUID: String?) {
+    public func updateFrame(id: String, frame: CGRect, screenUUID: String?,
+                            baseZoom: CGFloat? = nil, thumbnail: Bool? = nil) {
         try? db.dbQueue.write { conn in
-            try conn.execute(sql: "UPDATE pin_instance SET frame = ?, screenUUID = ? WHERE id = ?",
-                             arguments: [Self.encode(frame), screenUUID, id])
+            if let baseZoom, let thumbnail {
+                try conn.execute(sql: """
+                    UPDATE pin_instance SET frame = ?, screenUUID = ?, baseZoom = ?, thumbnail = ?
+                    WHERE id = ?
+                    """,
+                    arguments: [Self.encode(frame), screenUUID, Double(baseZoom), thumbnail, id])
+            } else {
+                try conn.execute(sql: "UPDATE pin_instance SET frame = ?, screenUUID = ? WHERE id = ?",
+                                 arguments: [Self.encode(frame), screenUUID, id])
+            }
         }
     }
 
@@ -133,7 +152,9 @@ public final class PinStore: Sendable {
                                                              fileURL: url),
                                       scale: max(CGFloat(item.scale ?? 1), 1),
                                       frame: frame,
-                                      opacity: record.opacity))
+                                      opacity: record.opacity,
+                                      baseZoom: record.baseZoom.map { CGFloat($0) },
+                                      isThumbnail: record.thumbnail))
             }
             return pins
         }) ?? []
