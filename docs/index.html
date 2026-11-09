@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Baton — macOS 菜单栏工具箱：截图、贴图、OCR、翻译</title>
+<meta name="description" content="Baton 把截图标注、贴图、OCR、翻译、剪贴板历史、输入法记忆、平滑滚动收进一个 macOS 菜单栏图标。原生 Swift 6 编写，不联网，数据都在本机。">
+<meta property="og:title" content="Baton — macOS 菜单栏工具箱">
+<meta property="og:description" content="截图标注、贴图、OCR、翻译、剪贴板历史、输入法记忆、平滑滚动，一个菜单栏搞定。">
+<meta property="og:type" content="website">
+<meta property="og:image" content="assets/app-icon.png">
+<link rel="icon" href="assets/favicon.png">
+<link rel="apple-touch-icon" href="assets/app-icon-128.png">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="./">
+      <img src="assets/app-icon-128.png" alt=""> Baton
+    </a>
+    <nav class="nav-links">
+      <a href="#features">功能</a>
+      <a href="#shortcuts">快捷键</a>
+      <a href="#privacy">隐私</a>
+      <a href="#faq">常见问题</a>
+      <a href="features.html">详细介绍</a>
+    </nav>
+    <a class="btn btn-primary" href="https://github.com/selierlin/baton/releases">下载</a>
+  </div>
+</header>
+
+<main>
+
+<section class="hero">
+  <div class="wrap hero-inner">
+    <span class="eyebrow"><i class="dot"></i>macOS 15+ · 原生 Swift · 源码公开</span>
+    <h1>截图、贴图、取字、翻译<br><em>一个菜单栏全搞定</em></h1>
+    <p class="lede">
+      平时散在四五个工具里的活，Baton 收进一个菜单栏图标：框一下、标几笔、钉在屏幕上、
+      把图里的字取出来翻译、翻回半小时前的剪贴板。
+    </p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/selierlin/baton/releases">下载 macOS 版</a>
+      <a class="btn btn-ghost" href="https://github.com/selierlin/baton">查看源码</a>
+    </div>
+    <div class="meta-row">
+      <span>macOS 15 Sequoia 或更高</span>
+      <span>Apple 芯片</span>
+      <span>不联网 · 无需注册</span>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="screen">
+      <div class="menubar">
+        <span class="active">Baton</span>
+        <span>文件</span>
+        <span>编辑</span>
+        <span>窗口</span>
+        <span class="right"><span>100%</span><span>周一 09:41</span></span>
+      </div>
+
+      <div class="dropdown">
+        <div class="row hi"><span>区域截图</span><span class="hk">⌥⌘A</span></div>
+        <div class="row"><span>截取活动窗口</span><span class="hk">⌃⌘6</span></div>
+        <div class="row"><span>更多截图 ▸</span><span class="hk"></span></div>
+        <div class="sep"></div>
+        <div class="row"><span>截图贴图</span><span class="hk">⌥⌘P</span></div>
+        <div class="row"><span>隐藏所有贴图</span><span class="hk">⌃⌘7</span></div>
+        <div class="sep"></div>
+        <div class="row"><span>截图 OCR</span><span class="hk">⇧⌘O</span></div>
+        <div class="row"><span>截图翻译</span><span class="hk">⇧⌘Y</span></div>
+        <div class="row"><span>划词翻译</span><span class="hk">⇧⌘T</span></div>
+        <div class="sep"></div>
+        <div class="row"><span>剪贴板历史</span><span class="hk">⇧⌘V</span></div>
+        <div class="row"><span>屏幕尺子</span><span class="hk">⌥⌘R</span></div>
+        <div class="row"><span>长截图</span><span class="hk">⌥⌘L</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="features">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker">功能</div>
+      <h2>四件事做到了，日常就顺了</h2>
+      <p class="sub">截图之后的每一步都不用换工具：标注、贴图、取字、翻译，全在同一个窗口链里。</p>
+    </div>
+
+    <div class="split">
+      <div class="copy">
+        <h3>从框选到标注，中间不落地</h3>
+        <p>拖一下就是区域截图，鼠标停在窗口或元素上会先框出来，单击即选。圈完直接进标注，不用先存文件再打开。</p>
+        <ul>
+          <li>放大镜跟着光标，实时报坐标、选区尺寸和像素色值</li>
+          <li>方框、椭圆、箭头、画笔、马赛克、高亮、文字、序号、尺规，画错了 <kbd>⌘Z</kbd></li>
+          <li>圈完发现多截了一块？选区四周的把手还能拖，已经画的图元贴着画面不动</li>
+        </ul>
+      </div>
+      <div class="figure">
+        <div class="toolbar-mock">
+          <div class="bar">
+            <div class="tool on">▭</div>
+            <div class="tool">◯</div>
+            <div class="tool">↗</div>
+            <div class="tool">✎</div>
+            <div class="tool">▦</div>
+            <div class="tool">◐</div>
+            <div class="tool divider"></div>
+            <div class="tool">A</div>
+            <div class="tool">①</div>
+            <div class="tool">↺</div>
+            <div class="tool">↪</div>
+          </div>
+          <div class="canvas-mock">
+            <div class="ann-box"></div>
+            <div class="ann-arrow">↗</div>
+            <div class="ann-text">就是这里</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="split flip">
+      <div class="copy">
+        <h3>想要的图，钉在屏幕上</h3>
+        <p>截图直接变成一块浮在窗口上方的贴图，对着它抄代码、比对设计稿都行。多张并存，点哪张键盘就归哪张。</p>
+        <ul>
+          <li>滚轮和触控板双指滑动缩放，围着你指的地方长大缩小</li>
+          <li><kbd>R</kbd> 收成缩略图（带一圈加粗边框），再按一次回到你刚调好的大小</li>
+          <li>贴图上还能继续标注，标完「再贴一张」把结果钉在旁边</li>
+          <li>贴图有记忆：关掉 App 再打开，位置和大小都还在</li>
+        </ul>
+      </div>
+      <div class="figure">
+        <div class="pins-mock">
+          <div class="pin-card big"><div class="ph"><span class="ln" style="width:64%"></span><span class="ln" style="width:82%"></span><span class="ln" style="width:47%"></span><span class="ln" style="width:71%"></span></div><span class="pin-badge">98%</span></div>
+          <div class="pin-card small"><div class="ph"><span class="ln" style="width:70%"></span><span class="ln" style="width:45%"></span></div><span class="pin-badge">R</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="split">
+      <div class="copy">
+        <h3>图里的字，取出来就能用</h3>
+        <p>框完按 <kbd>⇧⌘O</kbd> 取字，按 <kbd>⇧⌘Y</kbd> 连取带翻。本机 Vision 引擎免费离线，也能接百度、腾讯；翻译可以走 DeepSeek、Kimi、Ollama 这类 OpenAI 兼容接口。</p>
+        <ul>
+          <li>识别结果按行排好，带二维码的图会顺手把码解出来</li>
+          <li>划词翻译不用截图：选中一段文字按 <kbd>⇧⌘T</kbd>，浮窗贴在鼠标旁边</li>
+          <li>服务和密钥都在设置里，两页都有「测试连接」，配完当场验一遍</li>
+        </ul>
+      </div>
+      <div class="figure">
+        <div class="ocr-mock">
+          <div class="shot">
+            <b>Release Notes</b><br>
+            <span class="hl">Smooth scrolling</span> now replays at 120 Hz,<br>
+            and pinned windows remember their zoom.<br>
+            Requires macOS 15.0 or later.
+          </div>
+          <div class="translate-card">
+            <div class="src">识别 3 行 · 英文</div>
+            <div class="dst">平滑滚动现在以 120 Hz 重放，贴图窗口会记住缩放比例。</div>
+            <div class="engine">译文 · DeepSeek · 208 ms</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section soft">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker">还有</div>
+      <h2>顺手补上的那些小工具</h2>
+      <p class="sub">不是功能清单堆料，是每天真的会用到的几个开关。</p>
+    </div>
+
+    <div class="cards">
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4.5" width="12" height="16" rx="2.5"/><path d="M9.5 4.5V3.6A1.6 1.6 0 0 1 11.1 2h1.8a1.6 1.6 0 0 1 1.6 1.6v.9"/><path d="M9.5 10h5M9.5 13.5h5M9.5 17h3"/></svg></div>
+        <h3>剪贴板历史</h3>
+        <p>文字、图片、文件、颜色都能翻回来。支持粘贴栈、侧滑预览，图里的字也能搜到；密码类内容一律不落库。</p>
+      </article>
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6 9.5h.01M9 9.5h.01M12 9.5h.01M15 9.5h.01M18 9.5h.01M6 12.7h.01M9 12.7h.01M12 12.7h.01M15 12.7h.01M18 12.7h.01M8 15.6h8"/></svg></div>
+        <h3>输入法记忆</h3>
+        <p>按 App 记住输入法，切回来自动恢复。浏览器地址栏切英文、按网站甚至按输入框指定，写代码不再第一下打出中文。</p>
+      </article>
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="7" y="3" width="10" height="18" rx="5"/><path d="M12 7v3"/><path d="M12 12v3.5"/></svg></div>
+        <h3>平滑滚动</h3>
+        <p>给普通滚轮加一层 120 Hz 的惯性重放，长网页翻起来不那么顿。随时在菜单里关掉。</p>
+      </article>
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15.5 15.5 4l4.5 4.5L8.5 20z"/><path d="M8.5 11l2 2M11 8.5l2 2M13.5 6l2 2"/></svg></div>
+        <h3>长截图</h3>
+        <p>边滚边拼，超速或页面乱动的地方会标出断点，而不是给你一张错位的图。</p>
+      </article>
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 20.5 12 3.5l8.5 17z"/><path d="M8 20.5 12 12l4 8.5"/></svg></div>
+        <h3>屏幕尺子</h3>
+        <p>量像素、取色值，带吸附。对设计稿和前端还原特别顺。</p>
+      </article>
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6" width="13" height="12" rx="2.5"/><path d="M15.5 11l6-3.2v8.4l-6-3.2z"/></svg></div>
+        <h3>录屏</h3>
+        <p>区域、整屏、单窗口、单应用四种模式，带系统声音和麦克风旁白，成片是普通 MP4。</p>
+      </article>
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="6.5" width="17" height="11" rx="2.5"/><path d="M7 10.5h4M7 14h7M15.5 10.5h1.5"/></svg></div>
+        <h3>快捷键全部可改</h3>
+        <p>19 个动作都能重设或取消绑定，撞了系统键会提示；配置可以导出导入，换机器一键搬家。</p>
+      </article>
+      <article class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10" width="15" height="11" rx="2.5"/><path d="M8 10V7.5a4 4 0 0 1 8 0V10"/><path d="M12 14.5v2.5"/></svg></div>
+        <h3>本地优先</h3>
+        <p>没有账号，没有遥测。剪贴板库、贴图、配置都躺在自己的 Application Support 目录里。</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="shortcuts">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker">快捷键</div>
+      <h2>默认这一套，也能全改</h2>
+      <p class="sub">截图家族用 <kbd>⌃⌘</kbd> + 数字，避开系统的 <kbd>⇧⌘3/4/5</kbd>。</p>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>动作</th><th>快捷键</th><th>动作</th><th>快捷键</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>区域截图</td><td><kbd>⌥⌘A</kbd></td><td>截图贴图</td><td><kbd>⌥⌘P</kbd></td></tr>
+          <tr><td>截图 OCR</td><td><kbd>⇧⌘O</kbd></td><td>截图翻译</td><td><kbd>⇧⌘Y</kbd></td></tr>
+          <tr><td>划词翻译</td><td><kbd>⇧⌘T</kbd></td><td>剪贴板历史</td><td><kbd>⇧⌘V</kbd></td></tr>
+          <tr><td>长截图</td><td><kbd>⌥⌘L</kbd></td><td>屏幕尺子</td><td><kbd>⌥⌘R</kbd></td></tr>
+          <tr><td>全屏截图</td><td><kbd>⌃⌘1</kbd></td><td>上一次区域</td><td><kbd>⌃⌘2</kbd></td></tr>
+          <tr><td>延迟截图</td><td><kbd>⌃⌘4</kbd></td><td>回溯上次截图</td><td><kbd>⌃⌘5</kbd></td></tr>
+          <tr><td>活动窗口</td><td><kbd>⌃⌘6</kbd></td><td>隐藏所有贴图</td><td><kbd>⌃⌘7</kbd></td></tr>
+          <tr><td>区域录制</td><td><kbd>⌃⌘8</kbd></td><td>全屏录制</td><td><kbd>⌃⌘9</kbd></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="download" id="download">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker" style="color:#a9a9ff">下载</div>
+      <h2>把它放进菜单栏</h2>
+      <p class="sub">免费、源码公开。目前的构建是 Apple 芯片版本，Intel 机器需要自己编译。</p>
+    </div>
+
+    <div class="dl-grid">
+      <div class="dl-card">
+        <div class="ver">最新版本</div>
+        <div class="name">Baton for macOS</div>
+        <a class="btn btn-primary" href="https://github.com/selierlin/baton/releases">前往 Release 页面</a>
+        <div class="req">
+          <span>macOS 15 Sequoia 或更高</span>
+          <span>Apple 芯片（arm64）</span>
+          <span>解压后约 6 MB</span>
+        </div>
+      </div>
+
+      <div class="dl-note">
+        <strong>首次打开会被 Gatekeeper 拦一下</strong>，因为应用没有做 Apple 公证：
+        <ol>
+          <li>把 <code>Baton.app</code> 拖进「应用程序」</li>
+          <li>右键点图标 → 打开 → 再确认一次「打开」</li>
+          <li>按提示授予屏幕录制 / 辅助功能 / 输入监控，只在你用到对应功能时才需要</li>
+        </ol>
+        <div class="code"><span class="cmt"># 或者从源码构建</span>
+git clone https://github.com/selierlin/baton.git
+cd baton &amp;&amp; ./Scripts/make-app.sh release --install</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="privacy">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker">隐私</div>
+      <h2>你的数据，不上我的服务器</h2>
+      <p class="sub">Baton 没有后端。除了你自己在设置里填的云服务地址，它不往外发任何东西。</p>
+    </div>
+
+    <div class="promise">
+      <div><strong>没有账号</strong><span>下载即用，不需要注册，也没有遥测埋点。</span></div>
+      <div><strong>本地存储</strong><span>剪贴板库、贴图、配置都在 <code>~/Library/Application Support/Baton</code>。</span></div>
+      <div><strong>离线 OCR</strong><span>默认用系统 Vision，识别过程完全在本机。</span></div>
+      <div><strong>机密不落库</strong><span>密码管理器标记为机密或临时的剪贴板内容，一条都不存。</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="section soft" id="faq">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="kicker">常见问题</div>
+      <h2>动手之前可能会问</h2>
+    </div>
+
+    <div class="faq">
+      <details open>
+        <summary>为什么系统提示「无法验证开发者」？</summary>
+        <p>因为发布的是自签名构建，没有走 Apple 公证（个人项目，年费不值）。右键 → 打开 就能放行，系统会记住这一次选择。介意的话可以自己 clone 下来编译，签名用你自己的开发证书。</p>
+      </details>
+      <details>
+        <summary>需要给哪些权限？</summary>
+        <p>屏幕录制用于截图和录屏，辅助功能用于元素截图与划词，输入监控用于平滑滚动。三个都可以拒绝，拒了只是对应功能不可用，剪贴板、贴图这些照常工作。</p>
+      </details>
+      <details>
+        <summary>OCR 和翻译会把内容传到网上吗？</summary>
+        <p>默认不会：OCR 走本机 Vision。只有你自己在设置里配了百度、腾讯或某个大模型接口，那一部分内容才会发给你配的服务商，密钥存在系统钥匙串里。</p>
+      </details>
+      <details>
+        <summary>支持 Intel 和 macOS 14？</summary>
+        <p>代码本身没有绑定 Apple 芯片，但发布的构建是 arm64 的，最低系统写的是 macOS 15（用到了 ScreenCaptureKit 的新接口）。Intel 和更老的系统需要自己编译，能否跑通没有验证过。</p>
+      </details>
+      <details>
+        <summary>和系统截图、CleanShot 那些比呢？</summary>
+        <p>Baton 的起点是「我不想同时开五个 App」。截图标注只是其中一块，贴图、取字翻译、剪贴板、输入法记忆都在同一个菜单里，样式和键位尽量贴着 macOS 的原生习惯走。</p>
+      </details>
+      <details>
+        <summary>会开源吗？可以提需求吗？</summary>
+        <p>源码已经在 GitHub 上，MIT 许可。issue 和 PR 都欢迎，但这是个人项目，不保证响应时间。</p>
+      </details>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div class="who"><img src="assets/app-icon-128.png" alt=""> Baton · 一个 macOS 菜单栏工具箱</div>
+    <nav>
+      <a href="features.html">功能介绍</a>
+      <a href="https://github.com/selierlin/baton">GitHub</a>
+      <a href="https://github.com/selierlin/baton/releases">Releases</a>
+      <a href="https://github.com/selierlin/baton/blob/main/LICENSE">MIT 许可</a>
+      <a href="https://github.com/selierlin/baton/issues">反馈</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>
