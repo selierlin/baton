@@ -1110,9 +1110,12 @@ case "--audio-probe":
         let url = URL(fileURLWithPath: args[1])
         let asset = AVURLAsset(url: url)
         do {
-            let duration = try await asset.load(.duration)
-            let video = try await asset.loadTracks(withMediaType: .video)
-            let audio = try await asset.loadTracks(withMediaType: .audio)
+            // 这里用同步的旧接口：`loadTracks` 返回 [AVAssetTrack]，不是 Sendable，
+            // 新版 toolchain 不允许它从非隔离 async 调用里送回来（CI 上编不过）。
+            // 调试命令只读一个文件，同步取一次不影响什么。
+            let duration = asset.duration
+            let video = asset.tracks(withMediaType: .video)
+            let audio = asset.tracks(withMediaType: .audio)
             print("duration=\(String(format: "%.3f", CMTimeGetSeconds(duration)))s video=\(video.count) audio=\(audio.count)")
             for (index, track) in audio.enumerated() {
                 let range = try await track.load(.timeRange)
