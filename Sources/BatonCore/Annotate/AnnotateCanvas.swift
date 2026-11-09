@@ -649,8 +649,29 @@ public final class AnnotateCanvasView: NSView {
         field.identifier = NSUserInterfaceItemIdentifier("\(imagePoint.x),\(imagePoint.y)")
         addSubview(field)
         textField = field
+        // 已有文字从墨迹顶端回推输入框位置：直接把框摆在 origin 上，
+        // 框里的字会比落笔后的低半个行高，一进编辑就跳一下。
+        if existing != nil {
+            field.frame.origin.y -= inkTopOffset(kind: kind, style: textStyle)
+        }
         window?.makeFirstResponder(field)
         field.currentEditor()?.selectAll(nil)
+    }
+
+    /// 输入框里文字的墨迹顶端，相对输入框顶边的偏移（视图点）。
+    ///
+    /// 两边对齐方式不同：NSTextField 把行盒贴着框顶排（1.4 倍行高多出来的部分留在下面），
+    /// 标注的墨迹盒却按 `lineWidth` 上下各留一半；不做这个换算，用户点下一处落笔时，
+    /// 刚写好的那段字会往下跳 `lineWidth / 2`。标签文字还要再扣掉胶囊的 padding。
+    private func inkTopOffset(kind: TextKind, style: AnnotateStyle) -> CGFloat {
+        switch kind {
+        case .plain:
+            return -style.lineWidth / (2 * pixelScale)
+        case .label:
+            var labelStyle = style
+            labelStyle.fontSize = max(style.fontSize * 0.72, 11)
+            return -labelStyle.fontSize * 0.32 / pixelScale
+        }
     }
 
     /// 双击已有文字：用它的位置和样式重新打开输入框。
@@ -688,14 +709,17 @@ public final class AnnotateCanvasView: NSView {
     public func commitPendingText() {
         guard let field = textField else { return }
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parts = (field.identifier?.rawValue ?? "0,0").split(separator: ",")
-        let origin = CGPoint(x: CGFloat(Double(parts.first ?? "0") ?? 0),
-                             y: CGFloat(Double(parts.last ?? "0") ?? 0))
+        let usedStyle = pendingTextStyle ?? style
+        let kind = pendingTextKind
+        // 落笔位置按「输入框里那行字的墨迹顶端」算，而不是框的顶边：
+        // 两者差半个行高，直接用框的坐标会让文字往下跳。
+        let origin = CGPoint(
+            x: field.frame.minX * pixelScale,
+            y: (field.frame.minY + inkTopOffset(kind: kind, style: usedStyle)) * pixelScale
+        )
         field.removeFromSuperview()
         textField = nil
         window?.makeFirstResponder(self)
-
-        let usedStyle = pendingTextStyle ?? style
         pendingTextStyle = nil
 
         if let id = editingID {
@@ -860,7 +884,10 @@ public final class AnnotateCanvasView: NSView {
         case .text, .labelText:
             style.fontSize = min(max(8, style.fontSize + step * pixelScale), 200 * pixelScale)
         case .counter:
-            style.counterScale = min(max(0.4, style.counterScale + step * 0.02), 3)
+            // 滚轮调大小跟属性条滑杆用同一段量程，别让两条路能到的地方不一样
+            let range = AnnotateStyle.counterScaleRange
+            style.counterScale = min(max(range.lowerBound, style.counterScale + step * 0.02),
+                                     range.upperBound)
         default:
             style.lineWidth = min(max(1, style.lineWidth + step * pixelScale), 40 * pixelScale)
         }

@@ -291,6 +291,12 @@ public struct AnnotateStyle: Codable, Sendable, Equatable {
         self.counterScale = 1
     }
 
+    /// 序号大小倍率的可用范围（属性条的「大小」滑杆）。
+    ///
+    /// 默认样式下直径是 21–71pt。上限原来是 2.5（⌀105）——一张 1440 宽的截图里
+    /// 那么一颗比窗口标题栏还高，实际没人这么用，却白白占掉滑杆近一半行程。
+    public static let counterScaleRange: ClosedRange<CGFloat> = 0.5...1.7
+
     private enum CodingKeys: String, CodingKey {
         case color, lineWidth, opacity, fontSize, mosaicBlock, fontName
         case shapeDrawStyle, linePattern, markerCap, mosaicPattern

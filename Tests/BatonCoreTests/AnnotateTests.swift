@@ -221,6 +221,20 @@ final class AnnotateRendererTests: XCTestCase {
         XCTAssertLessThan(edge.1, 140)
     }
 
+    /// 序号大小有上下限：属性条滑杆、滚轮调大小、绘制都读同一段量程，
+    /// 越界的值（老配置或算术误差）按边界画，不能画出一颗比窗口还大的圆。
+    func testCounterScaleIsClampedToRange() {
+        let range = AnnotateStyle.counterScaleRange
+        var huge = style
+        huge.counterScale = 9
+        var tiny = style
+        tiny.counterScale = 0.01
+
+        let base = max(huge.fontSize * 0.75, huge.lineWidth * 3)
+        XCTAssertEqual(AnnotateRenderer.counterRadius(style: huge), base * range.upperBound, accuracy: 0.01)
+        XCTAssertEqual(AnnotateRenderer.counterRadius(style: tiny), base * range.lowerBound, accuracy: 0.01)
+    }
+
     /// 一位数和两位数都应该跟圆心对齐——字形左右边距不对称，靠字形包围盒才算得准。
     func testCounterNumberIsCenteredForEveryDigitCount() throws {
         for number in [1, 7, 12, 38] {

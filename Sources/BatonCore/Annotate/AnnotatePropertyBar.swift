@@ -43,6 +43,7 @@ final class AnnotatePropertyBarView: NSView {
 
     private let content = NSView()
     private var sections: [Section] = []
+    private var counterSizeLabel: PropertyReadout?
     private var tool: AnnotateTool = .rectangle
     private var built = false
 
@@ -145,6 +146,10 @@ final class AnnotatePropertyBarView: NSView {
                 break
             }
         }
+        if let label = counterSizeLabel {
+            let diameter = AnnotateRenderer.counterRadius(style: state.style) * 2
+            label.stringValue = "⌀\(Int(diameter.rounded()))"
+        }
     }
 
     // MARK: - 构建
@@ -152,6 +157,7 @@ final class AnnotatePropertyBarView: NSView {
     private func build(for tool: AnnotateTool, state: State) {
         for section in sections { section.view.removeFromSuperview() }
         sections.removeAll()
+        counterSizeLabel = nil
         built = true
 
         let group = AnnotateBarView.groups.first { $0.contains(tool) } ?? [tool]
@@ -281,15 +287,25 @@ final class AnnotatePropertyBarView: NSView {
                        provider: { shapes.firstIndex(of: $0.style.counterShape) ?? 0 }) { [weak self] index in
                 self?.onChange?(.counterShape(shapes[index]))
             }
-            addSlider(min: 0.5, max: 2.5, value: state.style.counterScale, metric: .counterScale,
+            let range = AnnotateStyle.counterScaleRange
+            addSlider(min: range.lowerBound, max: range.upperBound,
+                      value: state.style.counterScale, metric: .counterScale,
                       tooltip: "大小") { [weak self] value in
                 self?.onChange?(.counterScale(value))
             }
+            // 滑杆只有「大小」没有刻度，松手后完全不知道画出来是多大：
+            // 右边跟一个实时直径，用户按数字对着调
+            let size = PropertyReadout()
+            size.toolTip = "序号的直径（pt）"
+            size.setAccessibilityLabel("序号直径")
+            counterSizeLabel = size
+            add(size, width: 44)
             let field = PropertyNumberField(value: state.number)
             field.onChange = { [weak self] number in
                 self?.onChange?(.counterNumber(number))
             }
-            add(field, width: 52)
+            // 只放 1–999，三位数字 20pt 宽就够，不用把框拉得比读数还长
+            add(field, width: 40)
             addColors()
 
         case .text:
@@ -853,6 +869,51 @@ final class PropertySlider: PropertyControl {
     }
 }
 
+// MARK: - 读数
+
+/// 只读的一行读数（如 `⌀42`）。
+///
+/// 属性条整行按同一条中线对齐。`NSTextField` 把文字贴着自己的框顶画，
+/// 框比字高多少，读数就偏上多少；这里自己量、自己画，跟着中线走。
+@MainActor
+final class PropertyReadout: NSView {
+    var stringValue: String = "" {
+        didSet {
+            needsDisplay = true
+            setAccessibilityValue(stringValue)
+        }
+    }
+
+    private static let font = NSFont.systemFont(ofSize: 11)
+
+    init() {
+        super.init(frame: .zero)
+        setAccessibilityRole(.staticText)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var isFlipped: Bool { true }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard !stringValue.isEmpty else { return }
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: Self.font,
+            .foregroundColor: BarPalette.icon,
+        ]
+        let text = stringValue as NSString
+        let height = text.size(withAttributes: attrs).height
+        text.draw(at: NSPoint(x: 0, y: ((bounds.height - height) / 2).rounded()),
+                  withAttributes: attrs)
+    }
+}
+
 // MARK: - 数字输入
 
 @MainActor
@@ -866,22 +927,22 @@ final class PropertyNumberField: NSView, NSTextFieldDelegate {
     }
 
     private let field = NSTextField()
+    /// 悬停时底色提一级，跟分段格、色点一个反馈：不然看不出这一格能点
+    private var hovered = false {
+        didSet { needsDisplay = true }
+    }
+    private var hoverArea: NSTrackingArea?
 
     init(value: Int) {
         super.init(frame: .zero)
         field.frame = .zero
         field.stringValue = "\(value)"
         field.isBordered = false
-        field.drawsBackground = true
-        field.backgroundColor = BarPalette.control
+        field.drawsBackground = false
         field.textColor = BarPalette.label
         field.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
         field.alignment = .center
         field.focusRingType = .none
-        field.wantsLayer = true
-        field.layer?.cornerRadius = 6
-        field.layer?.borderWidth = 1
-        field.layer?.borderColor = AnnotateBarView.borderColor.cgColor
         field.setAccessibilityLabel("序号")
         field.setAccessibilityHelp("输入 1–999 的数字")
         field.target = self
@@ -894,10 +955,50 @@ final class PropertyNumberField: NSView, NSTextFieldDelegate {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    /// 胶囊和滑杆、分段槽同高：整条里所有控件都 22 高
+    private static let boxHeight: CGFloat = 22
+
+    /// 胶囊底自己画：输入框得缩到一行高才能让数字坐在中线上，
+    /// 让输入框兼任底框的话，它有多高数字就偏上多少。
+    ///
+    /// 外观跟旁边那两处胶囊（分段槽、颜色条）对齐：同高、同色、不描边。
+    /// 描 1pt 黑边虽然更像输入框，但在一排无边框胶囊里显得像常亮的焦点环。
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: boxRect, xRadius: 5, yRadius: 5)
+        (hovered ? BarPalette.hover : BarPalette.controlRaised).setFill()
+        path.fill()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(rect: .zero,
+                                  options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovered = true }
+    override func mouseExited(with event: NSEvent) { hovered = false }
+
+    /// 胶囊占的矩形，垂直居中在整条高度的中间
+    private var boxRect: NSRect {
+        NSRect(x: 0, y: ((bounds.height - Self.boxHeight) / 2).rounded(),
+               width: bounds.width, height: Self.boxHeight)
+    }
+
     override func layout() {
         super.layout()
-        field.frame = NSRect(x: 2, y: (bounds.height - 22) / 2,
-                             width: bounds.width - 4, height: 22)
+        guard let font = field.font else { return }
+        let line = ceil(font.ascender - font.descender + font.leading)
+        field.frame = NSRect(x: 4, y: boxRect.midY - line / 2,
+                             width: bounds.width - 8, height: line)
     }
 
     @objc private func commit() {

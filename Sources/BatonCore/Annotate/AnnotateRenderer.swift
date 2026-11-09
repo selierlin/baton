@@ -21,7 +21,9 @@ public enum AnnotateRenderer {
     }
 
     public static func counterRadius(style: AnnotateStyle) -> CGFloat {
-        max(style.fontSize * 0.75, style.lineWidth * 3) * max(style.counterScale, 0.2)
+        let range = AnnotateStyle.counterScaleRange
+        let scale = min(max(style.counterScale, range.lowerBound), range.upperBound)
+        return max(style.fontSize * 0.75, style.lineWidth * 3) * scale
     }
 
     private static func attributed(_ string: String, style: AnnotateStyle) -> NSAttributedString {
