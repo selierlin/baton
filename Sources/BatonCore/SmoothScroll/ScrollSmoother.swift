@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import CoreGraphics
 import Foundation
 import os
@@ -47,12 +48,22 @@ public final class ScrollSmoother {
 
     private var sourceBundleIDs: [Int32: String?] = [:]
 
+    /// 测试注入：给定指针位置返回该位置的 App bundle id。为 nil 时走真实的 AX 命中测试。
+    private var pointerProbe: ((CGPoint) -> String?)?
+    /// AX 命中测试约 0.6ms，一次滚动手势里指针基本不动，按「位置 + 时间」缓存住
+    private var pointerCache: (point: CGPoint, bundleID: String?, at: CFTimeInterval)?
+
     private let store: SmoothScrollStore?
     private let framer = ScrollFramer()
 
     public init(store: SmoothScrollStore?) {
         self.store = store
         self.settings = store?.load() ?? SmoothScrollSettings()
+    }
+
+    /// 让测试绕过 AX。
+    public func setPointerProbe(_ probe: ((CGPoint) -> String?)?) {
+        pointerProbe = probe
     }
 
     public var isEnabled: Bool { settings.enabled }
@@ -77,6 +88,15 @@ public final class ScrollSmoother {
             return false
         }
         guard sample.deltaX != 0 || sample.deltaY != 0 else { return false }
+
+        // 排除名单优先于一切判定：用户点名不要动的 App，连相位判断都不做，原事件直接放行。
+        // 名单为空时一次查询都不发，这条分支对绝大多数人零成本。
+        if !settings.excludedApps.isEmpty,
+           let app = bundleIDUnderPointer(sample.location),
+           settings.excludedApps.contains(app) {
+            lastDecision = "已排除：\(Self.displayName(for: app))，不接管"
+            return false
+        }
 
         let driver = sourceBundleIDs[sample.sourcePID].flatMap { $0 }
             ?? resolvedBundleID(sample.sourcePID)
@@ -148,6 +168,45 @@ public final class ScrollSmoother {
     /// 退出或关闭开关时把未释放的位移丢掉，不要留一个半程的手势。
     public func finishGesture() {
         framer.reset()
+    }
+
+    // MARK: - 排除名单
+
+    /// 指针下那个 App 的 bundle id。
+    ///
+    /// 用 AX 命中测试而不是 `frontmostApplication`：在没激活的后台窗口上滚轮也应该按
+    /// 「那个窗口所属的 App」判断，用前台 App 会错判。
+    private func bundleIDUnderPointer(_ point: CGPoint) -> String? {
+        if let pointerProbe { return pointerProbe(point) }
+
+        let now = CFAbsoluteTimeGetCurrent()
+        if let cached = pointerCache,
+           now - cached.at < 0.8,
+           abs(cached.point.x - point.x) < 2,
+           abs(cached.point.y - point.y) < 2 {
+            return cached.bundleID
+        }
+        let bundleID = Self.appBundleID(at: point)
+        pointerCache = (point, bundleID, now)
+        return bundleID
+    }
+
+    private static func appBundleID(at point: CGPoint) -> String? {
+        guard AXIsProcessTrusted() else { return nil }
+        let system = AXUIElementCreateSystemWide()
+        var element: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &element) == .success,
+              let element else {
+            return nil
+        }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success else { return nil }
+        return NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+    }
+
+    private static func displayName(for bundleID: String) -> String {
+        NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.localizedName
+            ?? bundleID
     }
 
     /// pid → bundle id，带缓存：每次滚动事件都查一遍 NSRunningApplication 太浪费。

@@ -30,6 +30,13 @@ public struct SmoothScrollSettings: Codable, Sendable, Equatable {
     /// 用户确认自己用的是滚轮鼠标时打开这一项兜底。
     public var forceMouse: Bool
 
+    /// 不做平滑的 App（bundle id）。
+    ///
+    /// 有些 App 自己就要吃原始滚轮事件：游戏、远程桌面、专业软件里的画布缩放。
+    /// 平滑会把这些改成带相位的像素事件，轻则手感变味，重则完全不响应。
+    /// 按**指针下的 App** 判断，不是前台 App——在后台窗口上滚轮也要放行。
+    public var excludedApps: [String]
+
     /// 一格滚多远，给界面显示用。
     public var pointsPerTick: Double { Self.referenceStep * speed }
 
@@ -50,16 +57,18 @@ public struct SmoothScrollSettings: Codable, Sendable, Equatable {
                 speed: Double = 3.60,
                 duration: Double = 4.35,
                 deadZone: Double = 1.0,
-                forceMouse: Bool = false) {
+                forceMouse: Bool = false,
+                excludedApps: [String] = []) {
         self.enabled = enabled
         self.speed = speed
         self.duration = duration
         self.deadZone = deadZone
         self.forceMouse = forceMouse
+        self.excludedApps = excludedApps
     }
 
     private enum CodingKeys: String, CodingKey {
-        case enabled, speed, duration, deadZone, forceMouse
+        case enabled, speed, duration, deadZone, forceMouse, excludedApps
         // 老版本的字段，只为迁移时能认出来
         case pointsPerLine, maxPending
     }
@@ -83,6 +92,7 @@ public struct SmoothScrollSettings: Codable, Sendable, Equatable {
             duration = fallback.duration
             deadZone = try container.decodeIfPresent(Double.self, forKey: .deadZone) ?? fallback.deadZone
             forceMouse = try container.decodeIfPresent(Bool.self, forKey: .forceMouse) ?? fallback.forceMouse
+            excludedApps = try container.decodeIfPresent([String].self, forKey: .excludedApps) ?? fallback.excludedApps
             return
         }
 
@@ -91,6 +101,7 @@ public struct SmoothScrollSettings: Codable, Sendable, Equatable {
         duration = try container.decodeIfPresent(Double.self, forKey: .duration) ?? fallback.duration
         deadZone = try container.decodeIfPresent(Double.self, forKey: .deadZone) ?? fallback.deadZone
         forceMouse = try container.decodeIfPresent(Bool.self, forKey: .forceMouse) ?? fallback.forceMouse
+        excludedApps = try container.decodeIfPresent([String].self, forKey: .excludedApps) ?? fallback.excludedApps
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -100,6 +111,7 @@ public struct SmoothScrollSettings: Codable, Sendable, Equatable {
         try container.encode(duration, forKey: .duration)
         try container.encode(deadZone, forKey: .deadZone)
         try container.encode(forceMouse, forKey: .forceMouse)
+        try container.encode(excludedApps, forKey: .excludedApps)
     }
 }
 

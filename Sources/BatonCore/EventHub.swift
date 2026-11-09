@@ -23,6 +23,8 @@ public struct ScrollSample: Sendable {
     public let flags: UInt64
     /// 事件的生产者进程。鼠标厂商驱动会在中间重写事件，靠它把驱动补的假相位认出来
     public let sourcePID: Int32
+    /// 事件发生时的指针位置（全局坐标，原点左上）。用来判断「这一格滚的是哪个 App」
+    public let location: CGPoint
     public let timestamp: TimeInterval
 
     public init(deltaX: Double,
@@ -34,6 +36,7 @@ public struct ScrollSample: Sendable {
                 scrollCount: Int64 = 0,
                 flags: UInt64 = 0,
                 sourcePID: Int32 = 0,
+                location: CGPoint = .zero,
                 timestamp: TimeInterval = 0) {
         self.deltaX = deltaX
         self.deltaY = deltaY
@@ -44,6 +47,7 @@ public struct ScrollSample: Sendable {
         self.scrollCount = scrollCount
         self.flags = flags
         self.sourcePID = sourcePID
+        self.location = location
         self.timestamp = timestamp
     }
 
@@ -312,6 +316,7 @@ public final class EventHub {
             scrollCount: event.getIntegerValueField(.scrollWheelEventScrollCount),
             flags: event.flags.rawValue,
             sourcePID: Int32(clamping: event.getIntegerValueField(.eventSourceUnixProcessID)),
+            location: event.location,
             timestamp: TimeInterval(event.timestamp) / 1_000_000_000
         )
     }

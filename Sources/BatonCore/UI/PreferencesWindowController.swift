@@ -184,6 +184,10 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
             self?.smoothScroll?.apply { $0.forceMouse = enabled }
             self?.onChange?()
         }
+        scroll.onExcludeChange = { [weak self] bundleIDs in
+            self?.smoothScroll?.apply { $0.excludedApps = bundleIDs }
+            self?.onChange?()
+        }
         scroll.diagnostics = { [weak self] in
             self?.smoothScroll?.lastDecision
         }

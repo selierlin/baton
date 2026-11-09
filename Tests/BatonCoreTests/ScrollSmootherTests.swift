@@ -161,9 +161,17 @@ final class ScrollSmootherEngineTests: XCTestCase {
         settings.speed = 1.8
         settings.duration = 3.2
         settings.deadZone = 0.5
+        settings.excludedApps = ["com.example.game", "com.apple.Terminal"]
         try store.save(settings)
 
         XCTAssertEqual(store.load(), settings)
+    }
+
+    /// 老配置里没有 excludedApps 这个键，不能让整份配置解码失败或把名单读成 nil
+    func testSettingsWithoutExclusionsDecodeToEmptyList() throws {
+        let json = #"{"enabled":true,"speed":3.6,"duration":4.35,"deadZone":1,"forceMouse":false}"#
+        let settings = try JSONDecoder().decode(SmoothScrollSettings.self, from: Data(json.utf8))
+        XCTAssertEqual(settings.excludedApps, [])
     }
 }
 
@@ -175,7 +183,8 @@ final class ScrollSmootherFilterTests: XCTestCase {
                         phase: Int64 = 0,
                         momentum: Int64 = 0,
                         scrollCount: Int64 = 0,
-                        flags: UInt64 = 0) -> ScrollSample {
+                        flags: UInt64 = 0,
+                        location: CGPoint = CGPoint(x: 100, y: 100)) -> ScrollSample {
         ScrollSample(deltaX: 0,
                      deltaY: deltaY,
                      unit: unit,
@@ -184,7 +193,52 @@ final class ScrollSmootherFilterTests: XCTestCase {
                      momentum: momentum,
                      scrollCount: scrollCount,
                      flags: flags,
+                     location: location,
                      timestamp: 0)
+    }
+
+    // MARK: - 排除的应用
+
+    func testExcludedAppPassesThroughUntouched() {
+        let smoother = ScrollSmoother(store: nil)
+        smoother.apply { $0.excludedApps = ["com.example.game"] }
+        smoother.setPointerProbe { _ in "com.example.game" }
+
+        XCTAssertFalse(smoother.consume(sample(deltaY: 3)))
+        XCTAssertEqual(smoother.swallowedTicks, 0)
+        XCTAssertTrue(smoother.lastDecision?.contains("已排除") ?? false)
+    }
+
+    func testAppNotInExclusionsIsStillSmoothed() {
+        let smoother = ScrollSmoother(store: nil)
+        smoother.apply { $0.excludedApps = ["com.example.game"] }
+        smoother.setPointerProbe { _ in "com.apple.Safari" }
+
+        XCTAssertTrue(smoother.consume(sample(deltaY: 3)))
+        XCTAssertEqual(smoother.swallowedTicks, 1)
+        smoother.finishGesture()
+    }
+
+    /// 名单为空是绝大多数人的状态：一次指针查询都不能发
+    func testPointerIsNotProbedWhenNoExclusions() {
+        let smoother = ScrollSmoother(store: nil)
+        var probed = false
+        smoother.setPointerProbe { _ in probed = true; return "com.example.game" }
+
+        XCTAssertTrue(smoother.consume(sample(deltaY: 3)))
+        XCTAssertFalse(probed)
+        smoother.finishGesture()
+    }
+
+    /// 拿不到指针下的 App（读不到 AX、点在桌面上）时按「没排除」处理，宁可平滑也不要漏接管
+    func testUnknownPointerAppKeepsSmoothing() {
+        let smoother = ScrollSmoother(store: nil)
+        smoother.apply { $0.excludedApps = ["com.example.game"] }
+        smoother.setPointerProbe { _ in nil }
+
+        XCTAssertTrue(smoother.consume(sample(deltaY: 3)))
+        XCTAssertEqual(smoother.swallowedTicks, 1)
+        smoother.finishGesture()
     }
 
     func testTrackpadIsPassedThrough() {
