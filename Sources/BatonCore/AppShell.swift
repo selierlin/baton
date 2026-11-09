@@ -951,9 +951,17 @@ capturesAudio: recordingSettings.capturesAudio,
         NSApp.activate()
         Task { [weak self] in
             guard let self else { return }
+            // OCR/翻译在识别完之前一直占着这条链路：那几秒里屏幕上只有「正在识别…」，
+            // 再按热键多半是「刚才没反应」的补按，放过去就会多铺一层覆盖层，
+            // 用户看到的就是「圈选两次、最后算的是第二次」。
+            let holdsUntilHandled: Bool
+            switch action {
+            case .ocr, .translate: holdsUntilHandled = true
+            default: holdsUntilHandled = false
+            }
             let outcome = await captureSession.begin(intent: intent, action: action)
-            // 选区已到手，后续（OCR/贴图/标注）不该再挡住新的截图
-            self.captureInFlight = false
+            // 选区已到手（且不是还要接着识别的动作），后续不该再挡住新的截图
+            if !holdsUntilHandled { self.captureInFlight = false }
             let ms = Int(Date().timeIntervalSince(started) * 1000)
             switch outcome {
             case .cancelled:
@@ -968,6 +976,7 @@ capturesAudio: recordingSettings.capturesAudio,
                                  "rect=\(result.screenRect.logText) px=\(result.pixelRect.logText) ms=\(ms)")
                 await handle(result)
             }
+            if holdsUntilHandled { self.captureInFlight = false }
         }
     }
 

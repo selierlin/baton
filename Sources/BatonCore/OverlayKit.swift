@@ -74,6 +74,7 @@ public final class OverlayController {
             self.retainsSelection = keepsSelection
             self.views.removeAll()
             OverlayRecovery.beginSession()
+            ActionLog.action("overlay.present", "displays=\(frames.count) keeps=\(keepsSelection)")
 
             for frame in frames {
                 let (window, view) = makeWindow(for: frame, mode: mode, probe: probe)

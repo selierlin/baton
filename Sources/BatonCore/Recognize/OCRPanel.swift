@@ -28,8 +28,10 @@ public final class OCRPanelController {
                              styleMask: [.borderless, .nonactivatingPanel],
                              backing: .buffered,
                              defer: false)
-        panel.isFloatingPanel = true
-        panel.level = .floating
+        // 默认不置顶：正常窗口层级，切到别的 App 就被压下去。
+        // 要常驻眼前用工具条里的「钉住」，那才是显式的置顶开关。
+        panel.isFloatingPanel = false
+        panel.level = .normal
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = true
