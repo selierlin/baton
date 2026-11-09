@@ -174,7 +174,8 @@ final class ScrollSmootherFilterTests: XCTestCase {
                         isContinuous: Bool = false,
                         phase: Int64 = 0,
                         momentum: Int64 = 0,
-                        scrollCount: Int64 = 0) -> ScrollSample {
+                        scrollCount: Int64 = 0,
+                        flags: UInt64 = 0) -> ScrollSample {
         ScrollSample(deltaX: 0,
                      deltaY: deltaY,
                      unit: unit,
@@ -182,6 +183,7 @@ final class ScrollSmootherFilterTests: XCTestCase {
                      phase: phase,
                      momentum: momentum,
                      scrollCount: scrollCount,
+                     flags: flags,
                      timestamp: 0)
     }
 
@@ -281,5 +283,45 @@ final class ScrollSmootherFilterTests: XCTestCase {
         let sample = EventHub.sample(from: event)
         XCTAssertEqual(sample.unit, .points)
         XCTAssertEqual(sample.deltaY, -12, accuracy: 0.5)
+    }
+
+    // MARK: - Shift 横向滚动
+
+    /// 平滑后的事件是带相位的像素事件，App 那套「Shift 换轴」不再触发，
+    /// 所以必须由 Baton 自己把竖向量搬到横轴上
+    func testShiftMovesVerticalOntoLateralAxis() {
+        let out = ScrollSmoother.shiftAxes(x: 0, y: 36, flags: [.maskShift])
+        XCTAssertEqual(out.x, 36)
+        XCTAssertEqual(out.y, 0)
+        // 留着 Shift 的话，还会按修饰键换轴的 App 会再换一次，又变回竖向
+        XCTAssertFalse(out.flags.contains(.maskShift))
+    }
+
+    /// 事件本来就是横向的（硬件或驱动已经换过轴）时不能再换，否则换两次等于没换
+    func testAlreadyLateralShiftEventIsLeftAlone() {
+        let out = ScrollSmoother.shiftAxes(x: 12, y: 0, flags: [.maskShift])
+        XCTAssertEqual(out.x, 12)
+        XCTAssertEqual(out.y, 0)
+        XCTAssertTrue(out.flags.contains(.maskShift))
+    }
+
+    func testDiagonalShiftEventIsLeftAlone() {
+        let out = ScrollSmoother.shiftAxes(x: 4, y: 9, flags: [.maskShift])
+        XCTAssertEqual(out.x, 4)
+        XCTAssertEqual(out.y, 9)
+    }
+
+    func testWithoutShiftAxesAreUntouched() {
+        let out = ScrollSmoother.shiftAxes(x: 0, y: 36, flags: [])
+        XCTAssertEqual(out.x, 0)
+        XCTAssertEqual(out.y, 36)
+    }
+
+    func testShiftScrollIsReportedAsLateralInDiagnostics() {
+        let smoother = ScrollSmoother(store: nil)
+        XCTAssertTrue(smoother.consume(sample(deltaY: 1, flags: CGEventFlags.maskShift.rawValue)))
+        XCTAssertEqual(smoother.swallowedTicks, 1)
+        XCTAssertTrue(smoother.lastDecision?.contains("Shift 横向") ?? false)
+        smoother.finishGesture()
     }
 }

@@ -105,9 +105,17 @@ public final class ScrollSmoother {
             }
         }
         let tickY = points(sample.deltaY, sample.unit)
-        framer.push(x: points(sample.deltaX, sample.unit),
-                    y: tickY,
-                    flags: CGEventFlags(rawValue: sample.flags),
+        let tickX = points(sample.deltaX, sample.unit)
+
+        // Shift + 竖滚 = 横向滚动，这件事 macOS 是交给 App 自己做的（Chrome/WebKit 和
+        // NSScrollView 都按修饰键换轴），而且只对「行单位」的离散事件生效。
+        // Baton 把一格重写成带相位的像素事件后，App 那套换轴逻辑不再触发，
+        // 结果是按着 Shift 反而一动不动（横向视图里竖滚无处可去）。
+        let flags = CGEventFlags(rawValue: sample.flags)
+        let axis = Self.shiftAxes(x: tickX, y: tickY, flags: flags)
+        framer.push(x: axis.x,
+                    y: axis.y,
+                    flags: axis.flags,
                     trans: settings.trans,
                     deadZone: settings.deadZone)
 
@@ -116,13 +124,25 @@ public final class ScrollSmoother {
         let detail = sample.unit == .lines
             ? "\(Int(abs(sample.deltaY).rounded())) 行"
             : "\(Int(abs(sample.deltaY).rounded())) 像素"
-        let amount = Int(tickY.rounded())
-        lastDecision = "已接管：\(source) \(detail) → \(amount > 0 ? "+" : "")\(amount) 点"
+        let amount = Int(axis.y == 0 ? axis.x : axis.y)
+        let direction = axis.y == 0 && tickY != 0 ? "（Shift 横向）" : ""
+        lastDecision = "已接管：\(source) \(detail) → \(amount > 0 ? "+" : "")\(amount) 点\(direction)"
         swallowedTicks += 1
         if ProcessInfo.processInfo.environment["BATON_SCROLL_DEBUG"] != nil {
-            print("[consume] dy=\(sample.deltaY) unit=\(sample.unit) pid=\(sample.sourcePID) tick=\(tickY)")
+            print("[consume] dy=\(sample.deltaY) dx=\(sample.deltaX) unit=\(sample.unit) pid=\(sample.sourcePID) tick=(\(axis.x),\(axis.y)) shift=\(flags.contains(.maskShift))")
         }
         return true
+    }
+
+    /// Shift + 竖滚 → 横向滚动。
+    ///
+    /// 只处理「纯竖向」：事件本来就带横向位移时原样返回（硬件或驱动可能已经换过轴），
+    /// 再换一次会又转回竖向。换轴成功后把 Shift 从标志位上去掉——有的 App 还会按
+    /// 修饰键换轴，像素事件里留着它就会换两次。
+    static func shiftAxes(x: Double, y: Double,
+                          flags: CGEventFlags) -> (x: Double, y: Double, flags: CGEventFlags) {
+        guard flags.contains(.maskShift), y != 0, x == 0 else { return (x, y, flags) }
+        return (y, 0, flags.subtracting(.maskShift))
     }
 
     /// 退出或关闭开关时把未释放的位移丢掉，不要留一个半程的手势。
