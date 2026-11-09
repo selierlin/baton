@@ -14,7 +14,7 @@ final class SiteRulesSettingsPage: NSView {
     private let countLabel = NSTextField(labelWithString: "")
     private let rulesStack = NSStackView()
     private var rulesBox: SettingsListView!
-    private let captureButton = NSButton(title: "采集网站规则…", target: nil, action: nil)
+    private let captureButton = NSButton(title: "采集输入框规则…", target: nil, action: nil)
     private let captureNote = NSTextField(labelWithString: "")
     private let learnCheck = NSSwitch()
     private let learnCountLabel = NSTextField(labelWithString: "")
@@ -62,7 +62,7 @@ final class SiteRulesSettingsPage: NSView {
         captureNote.textColor = .secondaryLabelColor
         captureNote.lineBreakMode = .byWordWrapping
         captureNote.maximumNumberOfLines = 2
-        captureNote.stringValue = "点按钮后 8 秒内切到浏览器，点一下要设置的输入框；停在页面正文就按整站设置。"
+        captureNote.stringValue = "点按钮后 8 秒内切到浏览器或任意 App，点一下要设置的输入框；停在页面正文就按整站设置。"
 
         let buttonRow = NSStackView(views: [captureButton, captureNote])
         buttonRow.orientation = .horizontal
@@ -173,7 +173,7 @@ final class SiteRulesSettingsPage: NSView {
         }
         // 具体是哪几个框在攒次数：鼠标停一下能看到，不占版面
         learnCountLabel.toolTip = candidates.isEmpty ? nil : candidates.prefix(8).map {
-            "\($0.host) › \($0.keyword) → \(service.sourceName(id: $0.sourceID) ?? $0.sourceID)（\($0.hits)/\(SiteRuleLearning.threshold)）"
+            "\($0.app ?? $0.host) › \($0.keyword) → \(service.sourceName(id: $0.sourceID) ?? $0.sourceID)（\($0.hits)/\(SiteRuleLearning.threshold)）"
         }.joined(separator: "\n")
         clearLearnButton.isHidden = candidates.isEmpty
     }
@@ -192,18 +192,30 @@ final class SiteRulesSettingsPage: NSView {
         let rules = service.siteRules
         rulesSignature = Self.signature(of: rules)
         countLabel.stringValue = rules.isEmpty
-            ? "还没有规则。同一个网站可以配多条：整站一条，某些输入框各一条。"
-            : "\(rules.count) 条规则，越具体越优先（带关键字 > 整站，子域 = 主域）"
+            ? "还没有规则。一个网站或 App 可以配多条：整站一条，某些输入框各一条。"
+            : "\(rules.count) 条规则，越具体越优先（带关键字 > 整个作用域）"
         captureButton.isEnabled = captureTimer == nil
 
         guard !rules.isEmpty else {
-            rulesBox?.setEmptyText("点下面的「采集网站规则…」，8 秒内去浏览器点一下输入框。")
+            rulesBox?.setEmptyText("点下面的「采集输入框规则…」，8 秒内去浏览器或任意 App 点一下输入框。")
             return
         }
 
         let sources = service.installedSources
-        for rule in rules.sorted(by: { ($0.host, $0.keyword ?? "") < ($1.host, $1.keyword ?? "") }) {
+        let appNames = Self.appNames(for: rules)
+        let ordered = rules.sorted {
+            if $0.isAppRule != $1.isAppRule { return !$0.isAppRule }
+            let l = $0.isAppRule ? (appNames[$0.app ?? ""] ?? $0.app ?? "") : $0.host
+            let r = $1.isAppRule ? (appNames[$1.app ?? ""] ?? $1.app ?? "") : $1.host
+            if l != r { return l.localizedStandardCompare(r) == .orderedAscending }
+            return ($0.keyword ?? "") < ($1.keyword ?? "")
+        }
+        for rule in ordered {
+            let title = rule.isAppRule
+                ? (appNames[rule.app ?? ""] ?? rule.app ?? "未知 App")
+                : rule.host
             let row = SiteRuleRow(rule: rule,
+                                  title: title,
                                   sources: sources,
                                   missingName: service.isSourceAvailable(rule.sourceID)
                                       ? nil
@@ -221,6 +233,21 @@ final class SiteRulesSettingsPage: NSView {
             rows.append(row)
         }
         refreshHits()
+    }
+
+    /// bundle id → App 名。已安装清单覆盖绝大多数情况，运行中的 App 兜住开发版和移动过的副本。
+    private static func appNames(for rules: [SiteRule]) -> [String: String] {
+        let ids = Set(rules.compactMap { $0.app })
+        guard !ids.isEmpty else { return [:] }
+        var names: [String: String] = [:]
+        for entry in InstalledAppCatalog.shared.all where ids.contains(entry.bundleID) {
+            names[entry.bundleID] = entry.name
+        }
+        for app in NSWorkspace.shared.runningApplications {
+            guard let id = app.bundleIdentifier, ids.contains(id), names[id] == nil else { continue }
+            names[id] = app.localizedName ?? id
+        }
+        return names
     }
 
     private func addRow(_ view: NSView, to stack: NSStackView) {
@@ -273,9 +300,9 @@ final class SiteRulesSettingsPage: NSView {
             let host = captureHost
             stopCapture()
             if let host {
-                presentEditor(host: host, keyword: nil, capturedField: false)
+                presentEditor(scope: .site, host: host, keyword: nil, capturedField: false)
             } else {
-                captureNote.stringValue = "没读到网站。确认切到了 Chrome / Safari，并且窗口没被最小化。"
+                captureNote.stringValue = "没读到输入框。确认切到了 Chrome / Safari 或目标 App，并且窗口没被最小化。"
             }
             return
         }
@@ -284,21 +311,40 @@ final class SiteRulesSettingsPage: NSView {
 
         guard let front = NSWorkspace.shared.frontmostApplication,
               front.processIdentifier != ProcessInfo.processInfo.processIdentifier,
-              BrowserContextReader.isSupported(front.bundleIdentifier) else {
+              front.activationPolicy == .regular,
+              let bundleID = front.bundleIdentifier else {
             return
         }
-        let context = BrowserContextReader.read(pid: front.processIdentifier, needHost: true)
-        guard let host = context.host, !host.isEmpty else { return }
 
-        switch context.kind {
-        case .field:
-            stopCapture()
-            presentEditor(host: host, keyword: context.label, capturedField: true)
-        case .page, .addressBar:
-            captureHost = host
-        case .unknown:
-            break
+        // 浏览器：域名 + 网页输入框
+        if BrowserContextReader.isSupported(bundleID) {
+            let context = BrowserContextReader.read(pid: front.processIdentifier, needHost: true)
+            guard let host = context.host, !host.isEmpty else { return }
+            switch context.kind {
+            case .field:
+                stopCapture()
+                presentEditor(scope: .site, host: host, keyword: context.label, capturedField: true)
+            case .page, .addressBar:
+                captureHost = host
+            case .unknown:
+                break
+            }
+            return
         }
+
+        // 普通 App：只认「焦点落在文本框」，且必须有可读文案（没文案就没法限定到这个框）
+        let field = BrowserContextReader.readField(pid: front.processIdentifier)
+        guard field.kind == .field else { return }
+        guard let label = field.label, !label.isEmpty else {
+            stopCapture()
+            captureNote.stringValue = "这个输入框没有可读的提示文案，没法限定到它。可以停在别的输入框再采一次。"
+            return
+        }
+        stopCapture()
+        presentEditor(scope: .app(bundleID: bundleID, name: front.localizedName ?? bundleID),
+                      host: "",
+                      keyword: label,
+                      capturedField: true)
     }
 
     private func updateCaptureNote() {
@@ -316,33 +362,53 @@ final class SiteRulesSettingsPage: NSView {
 
     // MARK: - 编辑对话框
 
-    private func presentEditor(host: String, keyword: String?, capturedField: Bool) {
+    private func presentEditor(scope: SiteRuleEditorView.Scope,
+                               host: String,
+                               keyword: String?,
+                               capturedField: Bool) {
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
 
+        let isApp = scope.isApp
         let alert = NSAlert()
-        alert.messageText = capturedField ? "新增网站规则（已采集输入框）" : "新增网站规则（整站）"
-        alert.informativeText = capturedField
-            ? "关键字按「包含」匹配输入框文案，站点改文案后要回来改。留空则整站生效。"
-            : "没等到输入框，按整站规则加。之后想限定到某个输入框，重新采集一次即可。"
+        alert.messageText = isApp
+            ? (capturedField ? "新增 App 输入框规则（已采集输入框）" : "新增 App 输入框规则")
+            : (capturedField ? "新增网站规则（已采集输入框）" : "新增网站规则（整站）")
+        if isApp {
+            alert.informativeText = "关键字按「包含」匹配输入框文案。同一个 App 可以配多条：聊天框一个源、搜索框另一个源。"
+        } else {
+            alert.informativeText = capturedField
+                ? "关键字按「包含」匹配输入框文案，站点改文案后要回来改。留空则整站生效。"
+                : "没等到输入框，按整站规则加。之后想限定到某个输入框，重新采集一次即可。"
+        }
         alert.addButton(withTitle: "保存")
         alert.addButton(withTitle: "取消")
-        alert.accessoryView = makeEditorView(host: host, keyword: keyword)
+        alert.accessoryView = makeEditorView(scope: scope, host: host, keyword: keyword)
 
         guard alert.runModal() == .alertFirstButtonReturn,
               let editor = alert.accessoryView as? SiteRuleEditorView else { return }
         guard let service else { return }
 
-        service.addSiteRule(SiteRule(host: editor.host,
-                                     keyword: editor.keyword,
-                                     sourceID: editor.sourceID))
+        switch editor.scope {
+        case .site:
+            service.addSiteRule(SiteRule(host: editor.host,
+                                         keyword: editor.keyword,
+                                         sourceID: editor.sourceID))
+        case .app(let bundleID, _):
+            service.addSiteRule(SiteRule(app: bundleID,
+                                         keyword: editor.keyword,
+                                         sourceID: editor.sourceID))
+        }
         reload()
         onChange?()
-        captureNote.stringValue = "已添加 \(editor.host)\(editor.keyword.isEmpty ? "（整站）" : " › \(editor.keyword)")"
+        captureNote.stringValue = "已添加 \(editor.scopeTitle)\(editor.keyword.isEmpty ? "" : " › \(editor.keyword)")"
     }
 
-    private func makeEditorView(host: String, keyword: String?) -> SiteRuleEditorView {
-        SiteRuleEditorView(host: host,
+    private func makeEditorView(scope: SiteRuleEditorView.Scope,
+                                host: String,
+                                keyword: String?) -> SiteRuleEditorView {
+        SiteRuleEditorView(scope: scope,
+                           host: host,
                            keyword: keyword ?? "",
                            sources: service?.installedSources ?? [],
                            selected: service?.currentSourceID)
@@ -351,10 +417,28 @@ final class SiteRulesSettingsPage: NSView {
 
 // MARK: - 采集结果编辑
 
-/// 三个字段的小面板：域名 / 输入框关键字 / 输入法。
+/// 三个字段的小面板：作用域 / 输入框关键字 / 输入法。
 /// 用固定坐标而不是 Auto Layout：`NSAlert.accessoryView` 只认 frame，约束容易算出 0 高。
 @MainActor
 private final class SiteRuleEditorView: NSView {
+    enum Scope: Equatable {
+        /// 网站规则：域名可编辑
+        case site
+        /// App 输入框规则：bundle id 固定，界面上只显示 App 名
+        case app(bundleID: String, name: String)
+
+        var isApp: Bool {
+            if case .app = self { return true }
+            return false
+        }
+
+        var appName: String {
+            if case .app(_, let name) = self { return name }
+            return ""
+        }
+    }
+
+    let scope: Scope
     let hostField = NSTextField()
     let keywordField = NSTextField()
     let sourcePopup = NSPopUpButton()
@@ -363,13 +447,26 @@ private final class SiteRuleEditorView: NSView {
     var keyword: String { keywordField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) }
     var sourceID: String { (sourcePopup.selectedItem?.representedObject as? String) ?? "" }
 
-    init(host: String, keyword: String, sources: [InputSourceInfo], selected: String?) {
+    /// 回执文案用的作用域名
+    var scopeTitle: String {
+        switch scope {
+        case .site: return host
+        case .app(_, let name): return name
+        }
+    }
+
+    init(scope: Scope, host: String, keyword: String, sources: [InputSourceInfo], selected: String?) {
+        self.scope = scope
         super.init(frame: NSRect(x: 0, y: 0, width: 340, height: 92))
 
-        hostField.stringValue = host
-        hostField.placeholderString = "github.com"
+        hostField.stringValue = scope.isApp ? scope.appName : host
+        hostField.placeholderString = scope.isApp ? "" : "github.com"
+        // App 规则的 bundle id 是采集来的，让用户手改只会改成不存在的值
+        hostField.isEditable = !scope.isApp
+        hostField.isSelectable = !scope.isApp
+        if scope.isApp { hostField.textColor = .secondaryLabelColor }
         keywordField.stringValue = keyword
-        keywordField.placeholderString = "留空 = 整站"
+        keywordField.placeholderString = scope.isApp ? "输入框提示文案，如「搜索」" : "留空 = 整站"
 
         for source in sources {
             sourcePopup.addItem(withTitle: source.name)
@@ -381,7 +478,7 @@ private final class SiteRuleEditorView: NSView {
         }
 
         let rows: [(String, NSView)] = [
-            ("域名", hostField),
+            (scope.isApp ? "应用" : "域名", hostField),
             ("输入框关键字", keywordField),
             ("输入法", sourcePopup),
         ]
@@ -416,7 +513,7 @@ private final class SiteRuleRow: NSStackView {
     private let hitLabel = NSTextField(labelWithString: "")
     private let ruleSourceID: String
 
-    init(rule: SiteRule, sources: [InputSourceInfo], missingName: String? = nil) {
+    init(rule: SiteRule, title: String, sources: [InputSourceInfo], missingName: String? = nil) {
         self.ruleID = rule.id
         self.ruleSourceID = rule.sourceID
         super.init(frame: .zero)
@@ -425,13 +522,15 @@ private final class SiteRuleRow: NSStackView {
         spacing = 8
         edgeInsets = NSEdgeInsets(top: 3, left: 0, bottom: 3, right: 0)
 
-        let host = NSTextField(labelWithString: rule.host)
+        let host = NSTextField(labelWithString: title)
         host.font = .systemFont(ofSize: 12)
         host.lineBreakMode = .byTruncatingTail
         host.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         host.widthAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
 
-        let scope = NSTextField(labelWithString: rule.isSiteWide ? "整站" : "含「\(rule.keyword ?? "")」")
+        let scope = NSTextField(labelWithString: rule.isSiteWide
+                                ? rule.displayKeyword
+                                : "含「\(rule.keyword ?? "")」")
         scope.font = .systemFont(ofSize: 11)
         scope.textColor = rule.isSiteWide ? .tertiaryLabelColor : .secondaryLabelColor
         scope.lineBreakMode = .byTruncatingTail
@@ -484,6 +583,16 @@ private final class SiteRuleRow: NSStackView {
         spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
         var line: [NSView] = [host, scope]
+
+        // 「App」标出作用域是应用而不是网站：两类规则混在一列里，只靠名字分不清
+        if rule.isAppRule {
+            let badge = NSTextField(labelWithString: "App")
+            badge.font = .systemFont(ofSize: 9)
+            badge.textColor = .tertiaryLabelColor
+            badge.toolTip = "这条规则只在 \(title) 里生效，按输入框文案区分"
+            badge.setContentHuggingPriority(.required, for: .horizontal)
+            line.append(badge)
+        }
 
         // 「自动」标出这条不是手工配的：用户看到规则自己长出来时，得能一眼知道来由
         if rule.learned == true {

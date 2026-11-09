@@ -45,8 +45,9 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
         clipboardTitle: "剪贴板历史：⇧⌘V 打开，这里管条数与容量",
     ]
 
-    /// 「网站」这个名字看起来像站点管理，看不出是在配输入法
-    static let siteRulesTitle = "网页输入法"
+    /// 「网站」这个名字看起来像站点管理，看不出是在配输入法；
+    /// 现在这条链同时管网站和普通 App 的输入框，所以叫「输入框规则」
+    static let siteRulesTitle = "输入框规则"
     static let inputSourceTitle = "输入法"
     /// 「滚动」单看会被读成滚动截图；带上「平滑」才明确指的是鼠标滚轮的手感
     static let scrollTitle = "平滑滚动"

@@ -174,16 +174,19 @@ case "--input-switch":
     exit(0)
 
 case "--browser-focus":
-    // 冒烟：焦点在地址栏 / 网页输入框时各跑一次，确认分类和域名、输入框文案都读到了
+    // 冒烟：焦点在地址栏 / 网页输入框时各跑一次，确认分类和域名、输入框文案都读到了。
+    // 普通 App 也走这条：field/fieldLabel 就是 App 级规则依赖的那两个值
     MainActor.assumeIsolated {
         guard let front = NSWorkspace.shared.frontmostApplication else {
             print("没有前台 App")
             exit(1)
         }
         let context = BrowserContextReader.read(pid: front.processIdentifier, needHost: true)
+        let field = BrowserContextReader.readField(pid: front.processIdentifier)
         print("front=\(front.localizedName ?? "-") [\(front.bundleIdentifier ?? "-")] "
               + "supported=\(BrowserContextReader.isSupported(front.bundleIdentifier)) "
               + "kind=\(context.kind) host=\(context.host ?? "-") label=\(context.label ?? "-")")
+        print("field=\(field.kind) fieldLabel=\(field.label ?? "-")")
     }
     exit(0)
 

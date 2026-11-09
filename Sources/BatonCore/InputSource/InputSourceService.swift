@@ -173,17 +173,35 @@ public final class InputSourceService {
 
     public var siteRules: [SiteRule] { settings.siteRules }
 
-    /// 同一个「域名 + 关键字」只留一条，重复添加等于改源。
+    /// 只属于某个 App 的输入框规则（钉钉的搜索框、飞书的聊天框）。
+    /// 网站规则和它们存在同一个数组里，靠 `app` 区分作用域。
+    public var appFieldRules: [SiteRule] { settings.siteRules.filter(\.isAppRule) }
+
+    /// 这条 App 规则属于哪个 App，给界面显示名字用
+    public var appFieldBundleIDs: Set<String> { Set(settings.siteRules.compactMap { $0.app }) }
+
+    /// 同一个「作用域 + 关键字」只留一条，重复添加等于改源。
+    /// 作用域是域名（网站规则）或 bundle id（App 输入框规则）。
     public func addSiteRule(_ rule: SiteRule) {
         var normalized = rule
-        normalized.host = SiteRuleMatcher.normalizeHost(rule.host) ?? rule.host
+        if let app = rule.app?.trimmingCharacters(in: .whitespacesAndNewlines), !app.isEmpty {
+            normalized.app = app
+            normalized.host = ""
+        } else {
+            normalized.app = nil
+            let host = SiteRuleMatcher.normalizeHost(rule.host) ?? rule.host
+            guard !host.isEmpty else { return }
+            normalized.host = host
+        }
         normalized.keyword = (rule.keyword?.isEmpty ?? true) ? nil : rule.keyword
-        guard !normalized.host.isEmpty, !normalized.sourceID.isEmpty else { return }
+        guard !normalized.sourceID.isEmpty else { return }
 
         settings.siteRules.removeAll { $0.id == normalized.id }
         // 手工配过的输入框，学习记录就作废：否则再重复两次，自动学到的会把手工这条覆盖掉
         if let keyword = normalized.keyword {
-            settings.learnCandidates.removeAll { $0.host == normalized.host && $0.keyword == keyword }
+            settings.learnCandidates.removeAll {
+                $0.scope == normalized.scope && $0.keyword == keyword
+            }
         }
         settings.siteRules.append(normalized)
         persist()
@@ -259,21 +277,28 @@ public final class InputSourceService {
         let removed = SiteRuleLearning.pruneStale(&settings.siteRules)
         guard !removed.isEmpty else { return }
         persist()
-        let names = removed.map { "\($0.host)›\($0.keyword ?? "整站")" }.joined(separator: ", ")
+        let names = removed.map { "\($0.app ?? $0.host)›\($0.keyword ?? "整站")" }.joined(separator: ", ")
         ActionLog.state("input.prune", "\(removed.count) 条：\(names)")
         log.info("清理 \(removed.count) 条两个月没用过的自动规则")
     }
 
-    /// 地址栏 / 网站规则都要靠轮询焦点，没配任何一条就一点开销都不产生。
+    /// 地址栏 / 网站规则 / App 输入框规则都要靠轮询焦点，一条都没配就一点开销都不产生。
     /// 不在这里判断辅助功能权限：用户可能开着设置页去授权，权限到手后应当立刻生效，
     /// 读不到时 `BrowserContextReader` 自己会快速返回 unknown。
     private func syncFocusWatcher() {
-        let hasSiteRules = !settings.siteRules.isEmpty
-        let shouldRun = settings.enabled && (settings.addressBarSourceID != nil || hasSiteRules)
-        focusWatcher.needsHost = hasSiteRules
+        // 浏览器那条链只在配了地址栏或网站规则时才需要；App 规则另走一套
+        let browserRules = settings.siteRules.filter { $0.app == nil }
+        let hasBrowserWork = settings.addressBarSourceID != nil || !browserRules.isEmpty
+        let appIDs = Set(settings.siteRules.compactMap { $0.app })
+        let shouldRun = settings.enabled && (hasBrowserWork || !appIDs.isEmpty)
+
+        focusWatcher.watchesBrowsers = hasBrowserWork
+        focusWatcher.needsHost = !browserRules.isEmpty
+        focusWatcher.appBundleIDs = appIDs
+
         if shouldRun {
             focusWatcher.onChange = { [weak self] context, key in
-                self?.handleBrowserContext(context, key: key)
+                self?.handleFocusContext(context, key: key)
             }
             focusWatcher.start()
         } else {
@@ -466,7 +491,7 @@ public final class InputSourceService {
         var merged: [SiteRuleCandidate] = []
         for candidate in settings.learnCandidates {
             if let index = merged.firstIndex(where: {
-                $0.host == candidate.host && $0.keyword == candidate.keyword
+                $0.scope == candidate.scope && $0.keyword == candidate.keyword
             }) {
                 merged[index].hits = max(merged[index].hits, candidate.hits)
                 merged[index].lastSeen = max(merged[index].lastSeen, candidate.lastSeen)
@@ -511,26 +536,38 @@ public final class InputSourceService {
         applyTarget(target, key: key, appName: app.name ?? key)
     }
 
-    /// 浏览器上下文变了：进/出地址栏、点到某个输入框、切到一个网站。
+    /// 焦点上下文变了：进/出地址栏、点到某个输入框、切到一个网站或 App。
     ///
     /// 只在「上下文变了」时动一次，不做持续强切：用户可能为了搜中文内容手动换回中文，
     /// 一直按回去就没法用了。
-    private func handleBrowserContext(_ context: BrowserContext, key: String) {
-        // key 为空 = 前台已经不是（受支持的）浏览器，切源交给 handleFrontApp
+    private func handleFocusContext(_ context: BrowserContext, key: String) {
+        // key 为空 = 前台已经不是要盯的 App，切源交给 handleFrontApp
         guard !key.isEmpty else {
             inAddressBar = false
-            // 这里不能清 suppressMemory：切走 App 时 watcher 会先报一次「不是浏览器」，
+            // 这里不能清 suppressMemory：切走 App 时 watcher 会先报一次「不是这个 App」，
             // 紧接着 handleFrontApp 才去记上一个 App 的记忆。提前清掉，网站规则定下的源
             // 就会被当成用户的习惯写进记忆（实测把 Chrome 的记忆写成了中文输入法）。
             return
         }
 
         let inBar = context.kind == .addressBar
+
+        // 原生输入框的 placeholder 常常「有字就消失」：焦点没动，文案从「搜索」变成空，
+        // 这时候按「没命中规则」回退到 App 默认源，等于用户打第一个字就被弹回中文。
+        // 所以「还在这块输入框里、但读不到文案」时保持现状，也不许写记忆。
+        if !inBar, context.kind == .field, (context.label?.isEmpty ?? true), suppressMemory {
+            return
+        }
+
+        // 有域名就是浏览器里的网页，按网站规则走；普通 App 没有域名，看 App 输入框规则
         let site = inBar
             ? nil
             : SiteRuleMatcher.match(host: context.host, label: context.label, rules: settings.siteRules)
+        let appRule = site != nil
+            ? nil
+            : SiteRuleMatcher.match(app: key, label: context.label, rules: settings.siteRules)
         inAddressBar = inBar
-        suppressMemory = inBar || site != nil
+        suppressMemory = inBar || site != nil || appRule != nil
 
         pendingSwitch?.cancel()
         pendingSwitch = nil
@@ -545,10 +582,11 @@ public final class InputSourceService {
         }
         ActionLog.state("input.ctx",
                         "kind=\(context.kind) host=\(context.host ?? "-") "
+                        + "app=\(context.host == nil ? key : "-") "
                         + "label=\(String((context.label ?? "-").prefix(24))) "
                         + "target=\(target) suppress=\(suppressMemory)")
-        if let site, site.sourceID == target {
-            noteRuleHit(site.id)
+        if let hit = site ?? appRule, hit.sourceID == target {
+            noteRuleHit(hit.id)
         }
         let appName = NSWorkspace.shared.frontmostApplication?.localizedName ?? key
         // 不等延迟：延迟是为了躲 App 激活时吞首字符，而这里是同一进程内的焦点移动，
@@ -608,9 +646,12 @@ public final class InputSourceService {
 
     // MARK: - 自动学习
 
-    /// 用户手动换源后，看一眼焦点是不是落在网页输入框里。是就记一次。
+    /// 用户手动换源后，看一眼焦点是不是落在输入框里。是就记一次。
     ///
-    /// 这里不靠 `BrowserFocusWatcher`：那个表只有在配了地址栏或网站规则时才跑，
+    /// 浏览器和普通 App 一起支持：浏览器记「域名 + 关键字」，普通 App 记
+    /// 「bundle id + 关键字」。两种都只在用户真的手动换过源时才发生。
+    ///
+    /// 这里不靠 `BrowserFocusWatcher`：那个表只有在配了规则时才跑，
     /// 而学习要在「什么规则都没有」时也能工作。换成在换源这一瞬间读一次，
     /// 每次成本约 1ms，且跑在后台队列，比常驻 120ms 轮询省得多。
     private func learnFromField() {
@@ -621,36 +662,48 @@ public final class InputSourceService {
         guard let app = NSWorkspace.shared.frontmostApplication,
               app.processIdentifier != ProcessInfo.processInfo.processIdentifier,
               app.activationPolicy == .regular,
-              BrowserContextReader.isSupported(app.bundleIdentifier) else {
+              let bundleID = app.bundleIdentifier else {
             return
         }
-        let key = app.bundleIdentifier ?? "pid:\(app.processIdentifier)"
-        guard !settings.ignored.contains(key) else { return }
+        guard !settings.ignored.contains(bundleID) else { return }
 
         let pid = app.processIdentifier
+        let isBrowser = BrowserContextReader.isSupported(bundleID)
         learnQueue.async { [weak self] in
-            let context = BrowserContextReader.read(pid: pid, needHost: true)
+            // 浏览器要连域名一起读，普通 App 只关心焦点是不是文本框；
+            // 普通 App 学习时排掉窗口标题（多半是文件名/文档名，换个文件就失效）
+            let context = isBrowser
+                ? BrowserContextReader.read(pid: pid, needHost: true)
+                : BrowserContextReader.readField(pid: pid, stableLabelOnly: true)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     // 读的过程中切走了 App，这份上下文不是这个源的场景
                     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
-                    self?.recordLearn(context: context, sourceID: source)
+                    self?.recordLearn(context: context, key: bundleID, sourceID: source)
                 }
             }
         }
     }
 
     /// 攒一次学习记录。`internal` 是为了让测试绕过 AX 直接喂上下文。
-    func recordLearn(context: BrowserContext, sourceID: String, now: Date = Date()) {
+    ///
+    /// 有域名按网站规则记，没有域名按 App 规则记（`key` 是 bundle id）。
+    func recordLearn(context: BrowserContext,
+                     key: String? = nil,
+                     sourceID: String,
+                     now: Date = Date()) {
         guard context.kind == .field,
-              let host = context.host,
               let keyword = SiteRuleLearning.keyword(from: context.label) else {
             return
         }
 
+        let host = context.host.flatMap { $0.isEmpty ? nil : $0 }
+        let app = host == nil ? key : nil
+        guard host != nil || app != nil else { return }
+
         // 同一条组合 1 秒内只算一次：Chrome 换源偶尔连发两条通知，
         // 人不可能在 1 秒内为了同一个框换两次源
-        let id = "\(host)|\(keyword)|\(sourceID)"
+        let id = "\(host.map { "site:\($0)" } ?? "app:\(app ?? "")")|\(keyword)|\(sourceID)"
         if let lastLearned, lastLearned.id == id, now.timeIntervalSince(lastLearned.at) < 1 {
             return
         }
@@ -660,7 +713,7 @@ public final class InputSourceService {
         // 已经学出来的、源又一样，说明想要的结果早就在了，重复确认没有意义。
         // 判定用「同一个框」而不是字符串相等：手工规则存的是整段 placeholder，
         // 学出来的是它前半句，字符串永远对不上
-        let newRule = SiteRule(host: host, keyword: keyword, sourceID: sourceID)
+        let newRule = SiteRule(host: host ?? "", app: app, keyword: keyword, sourceID: sourceID)
         if let existing = settings.siteRules.first(where: { SiteRuleMatcher.sameField($0, newRule) }),
            existing.learned != true || existing.sourceID == sourceID {
             return
@@ -669,11 +722,20 @@ public final class InputSourceService {
         lastLearned = (id, now)
 
         var candidates = settings.learnCandidates
-        let rule = SiteRuleLearning.record(host: host,
-                                          keyword: keyword,
-                                          sourceID: sourceID,
-                                          candidates: &candidates,
-                                          now: now)
+        var rule: SiteRule?
+        if let host {
+            rule = SiteRuleLearning.record(host: host,
+                                           keyword: keyword,
+                                           sourceID: sourceID,
+                                           candidates: &candidates,
+                                           now: now)
+        } else if let app {
+            rule = SiteRuleLearning.record(app: app,
+                                           keyword: keyword,
+                                           sourceID: sourceID,
+                                           candidates: &candidates,
+                                           now: now)
+        }
         settings.learnCandidates = candidates
 
         if var rule {
@@ -686,8 +748,8 @@ public final class InputSourceService {
             settings.siteRules.removeAll { $0.id == rule.id }
             settings.siteRules.append(rule)
             ActionLog.state("input.learn",
-                            "\(rule.host) › \(rule.keyword ?? "整站") = \(sourceID)（第 \(SiteRuleLearning.threshold) 次）")
-            log.info("学到网站规则：\(rule.host, privacy: .public) › \(rule.keyword ?? "-", privacy: .public)")
+                            "\(rule.app ?? rule.host) › \(rule.keyword ?? "整站") = \(sourceID)（第 \(SiteRuleLearning.threshold) 次）")
+            log.info("学到规则：\(rule.scope, privacy: .public) › \(rule.keyword ?? "-", privacy: .public)")
             persist()
             // 规则从无到有，轮询表得跟着起来，否则下次进这个框不会自动切
             syncFocusWatcher()

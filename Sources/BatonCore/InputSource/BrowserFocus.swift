@@ -124,18 +124,41 @@ public enum BrowserContextReader {
         return BrowserContext(kind: kind, host: host, label: label)
     }
 
+    /// 读任意 App 里「焦点是不是落在文本框」以及这个框的文案。
+    ///
+    /// 和 `read(pid:needHost:)` 的区别：那个是给浏览器用的，要判断焦点在地址栏
+    /// 还是网页里，得沿 parent 一路找 `AXWebArea`；这个是给普通 App 用的，
+    /// 只关心「焦点在不在一个可输入的地方」，两三次 AX 调用就能出结果。
+    ///
+    /// 拿不到文案（很多自绘输入框没有 placeholder）时返回 `.field` + `label == nil`：
+    /// 调用方据此知道「有输入框但没法按关键字区分」，也就不会误命中带关键字的规则。
+    ///
+    /// `stableLabelOnly`：学习时用。排掉 `AXTitle`——原生 App 的文本区标题往往是
+    /// 文档名（TextEdit 的「First Text View」、编辑器里的文件名），按它学出来的规则
+    /// 下次换个文件就不命中了。匹配时不需要这个限制，标题也是有效线索。
+    public static func readField(pid: pid_t, stableLabelOnly: Bool = false) -> BrowserContext {
+        guard AXIsProcessTrusted() else { return .unknown }
+
+        let app = AXUIElementCreateApplication(pid)
+        // 和浏览器那条一样：目标 App 卡住时别把 Baton 也拖住
+        AXUIElementSetMessagingTimeout(app, 0.2)
+
+        guard let focused = element(app, kAXFocusedUIElementAttribute) else { return .unknown }
+        let role = string(focused, kAXRoleAttribute)
+        guard textRoles.contains(role) else { return .unknown }
+        return BrowserContext(kind: .field,
+                              host: nil,
+                              label: fieldLabel(focused, includeTitle: !stableLabelOnly))
+    }
+
     // MARK: - 取字段
 
     /// 输入框的身份只能靠无障碍属性：placeholder 最稳定，其次是 title/description。
     /// 富文本编辑器经常一个都没有，那这条规则就不该命中（交给整站规则）。
-    private static func fieldLabel(_ element: AXUIElement) -> String? {
-        let candidates = [
-            kAXPlaceholderValueAttribute,
-            kAXTitleAttribute,
-            kAXDescriptionAttribute,
-            kAXHelpAttribute,
-            kAXIdentifierAttribute,
-        ]
+    private static func fieldLabel(_ element: AXUIElement, includeTitle: Bool = true) -> String? {
+        var candidates = [kAXPlaceholderValueAttribute]
+        if includeTitle { candidates.append(kAXTitleAttribute) }
+        candidates += [kAXDescriptionAttribute, kAXHelpAttribute, kAXIdentifierAttribute]
         for key in candidates {
             let text = string(element, key).trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty { return text }
@@ -201,7 +224,7 @@ public enum BrowserContextReader {
     }
 }
 
-/// 定时看一眼浏览器的输入上下文变没变。
+/// 定时看一眼焦点所在的输入框变没变（浏览器、普通 App 共用）。
 ///
 /// 只在状态真正变化时回调，服务端据此只切一次——不能每个 tick 都强切，
 /// 否则用户手动换成中文搜中文内容会被一直按回去。
@@ -209,8 +232,8 @@ public enum BrowserContextReader {
 /// 两条性能约束：
 /// 1. AX 读取放后台队列。AX 是跨进程同步调用，目标 App 卡死时要等满 messaging
 ///    timeout（200ms）才返回，跑在主线程上就是看得见的卡顿。
-/// 2. 前台不是受支持的浏览器时直接把表停掉。轮询的开销不在那 0.1ms 的计算，
-///    而在每秒 8 次把 CPU 叫醒。
+/// 2. 前台既不是受支持的浏览器、也没有配 App 规则时直接把表停掉。轮询的开销不在
+///    那 0.1ms 的计算，而在每秒 8 次把 CPU 叫醒。
 @MainActor
 public final class BrowserFocusWatcher {
     /// (上下文, 当前前台 App 的 rule key)
@@ -221,6 +244,13 @@ public final class BrowserFocusWatcher {
 
     /// 只有配了网站规则才需要读域名——那是一次整窗遍历，能省则省
     public var needsHost = false
+
+    /// 浏览器那条链要不要跑（配了地址栏或网站规则）。纯 App 规则时应当关掉，
+    /// 否则用户随便切到 Chrome 就会白白开始轮询
+    public var watchesBrowsers = true
+
+    /// 除浏览器外，还要盯输入框的 App（配了 App 级规则的那些）
+    public var appBundleIDs: Set<String> = []
 
     private let queue = DispatchQueue(label: "com.selier.baton.browser-focus", qos: .utility)
     private var timer: Timer?
@@ -236,7 +266,11 @@ public final class BrowserFocusWatcher {
     public var isRunning: Bool { started }
 
     public func start() {
-        guard !started else { return }
+        // 已经在跑：规则可能刚改过（新加了某个 App 的规则），按新配置重判一次要不要轮询
+        if started {
+            syncTimer()
+            return
+        }
         started = true
         last = .unknown
         lastKey = nil
@@ -263,10 +297,10 @@ public final class BrowserFocusWatcher {
         reading = false
     }
 
-    /// 前台是受支持的浏览器才起表；切到别的 App 停掉，切回来由激活通知唤起。
+    /// 前台是「值得盯的」才起表；切到别的 App 停掉，切回来由激活通知唤起。
     private func syncTimer() {
         guard started else { return }
-        guard frontBrowser() != nil else {
+        guard frontWatchedApp() != nil else {
             stopTimer()
             report(.unknown, key: "")
             return
@@ -287,11 +321,20 @@ public final class BrowserFocusWatcher {
         timer = nil
     }
 
-    private func frontBrowser() -> NSRunningApplication? {
+    /// 当前前台这个 App 值不值得盯：配了 App 规则的 App，或（浏览器那条链开着时）受支持的浏览器。
+    ///
+    /// 不重新枚举运行中的 App：`frontmostApplication` 是 NSWorkspace 的缓存值，
+    /// 一次不到 1µs；真正贵的是后面那次跨进程 AX 读。
+    private func frontWatchedApp() -> NSRunningApplication? {
         guard let app = NSWorkspace.shared.frontmostApplication,
               app.processIdentifier != ProcessInfo.processInfo.processIdentifier,
-              app.activationPolicy == .regular,
-              BrowserContextReader.isSupported(app.bundleIdentifier) else {
+              app.activationPolicy == .regular else {
+            return nil
+        }
+        if let bundleID = app.bundleIdentifier, appBundleIDs.contains(bundleID) {
+            return app
+        }
+        guard watchesBrowsers, BrowserContextReader.isSupported(app.bundleIdentifier) else {
             return nil
         }
         return app
@@ -299,7 +342,7 @@ public final class BrowserFocusWatcher {
 
     private func tick() {
         guard !reading else { return }
-        guard let app = frontBrowser() else {
+        guard let app = frontWatchedApp() else {
             stopTimer()
             report(.unknown, key: "")
             return
@@ -307,10 +350,14 @@ public final class BrowserFocusWatcher {
 
         let pid = app.processIdentifier
         let key = app.bundleIdentifier ?? "pid:\(pid)"
+        // 浏览器要区分地址栏 / 网页，得走整窗遍历；普通 App 只关心有没有输入框，读得更浅
+        let isBrowser = watchesBrowsers && BrowserContextReader.isSupported(app.bundleIdentifier)
         let needHost = needsHost
         reading = true
         queue.async { [weak self] in
-            let context = BrowserContextReader.read(pid: pid, needHost: needHost)
+            let context = isBrowser
+                ? BrowserContextReader.read(pid: pid, needHost: needHost)
+                : BrowserContextReader.readField(pid: pid)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }

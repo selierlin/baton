@@ -1,17 +1,19 @@
 import Foundation
 
-/// 一条网站规则。
+/// 一条输入框规则。网站和普通 App 共用一套结构，区别只在「作用域」：
 ///
-/// 两种粒度共用一套结构：
-/// - `keyword` 为空 → 整站都用这个源
-/// - `keyword` 非空 → 只有焦点的输入框文案里含这个关键字时才用
+/// - `app == nil` → 网站规则，`host` 是域名（整站一条，或按输入框关键字细分）
+/// - `app != nil` → App 规则，`app` 是 bundle id，`host` 留空
 ///
-/// 拿不到输入框文案（富文本编辑器常这样）时，带关键字的规则不会命中，
-/// 页面退回整站规则——宁可不动，也别乱切。
+/// `keyword` 为空表示整个作用域都用这个源；非空时只有焦点落进文案含该关键字的
+/// 输入框才切。拿不到输入框文案（富文本编辑器常这样）时带关键字的规则不命中，
+/// 宁可不动，也别乱切。
 public struct SiteRule: Codable, Sendable, Equatable, Identifiable {
-    /// 已是规范化后的域名：小写、无 scheme、无 www.、无端口、无路径
+    /// 已是规范化后的域名：小写、无 scheme、无 www.、无端口、无路径。App 规则为空串
     public var host: String
-    /// 输入框关键字（placeholder / aria-label 里的一段）。nil 或空串 = 整站
+    /// App 规则的 bundle id。网站规则为 nil
+    public var app: String?
+    /// 输入框关键字（placeholder / aria-label 里的一段）。nil 或空串 = 整个作用域
     public var keyword: String?
     public var sourceID: String
     /// 这条是自动学出来的（而不是手工采集/填的）。只是给界面打个标，不参与匹配。
@@ -19,16 +21,18 @@ public struct SiteRule: Codable, Sendable, Equatable, Identifiable {
     /// 学出来的时间。启动清理时拿它当「从没命中过」的起算点。
     public var createdAt: Date?
     /// 最近一次真的被用上（焦点落进去、因此换了源）。重启后仍然有效，
-    /// 因为「两个月没用过」这件事本身要跨重启才判得出来。
+    /// 因为「两个月没用过」这件事要跨重启才判得出来。
     public var lastUsed: Date?
 
-    public init(host: String,
+    public init(host: String = "",
+                app: String? = nil,
                 keyword: String? = nil,
                 sourceID: String,
                 learned: Bool? = nil,
                 createdAt: Date? = nil,
                 lastUsed: Date? = nil) {
         self.host = host
+        self.app = app
         self.keyword = (keyword?.isEmpty ?? true) ? nil : keyword
         self.sourceID = sourceID
         self.learned = learned
@@ -36,12 +40,17 @@ public struct SiteRule: Codable, Sendable, Equatable, Identifiable {
         self.lastUsed = lastUsed
     }
 
-    public var id: String { "\(host)|\(keyword ?? "")" }
+    /// 作用域标识。App 规则用 `app:` 前缀，和域名不可能撞。
+    public var scope: String { app.map { "app:\($0)" } ?? host }
+
+    public var id: String { "\(scope)|\(keyword ?? "")" }
 
     /// 带关键字的规则更具体，界面上也用它来决定显示「整站」还是「含 xx」
     public var isSiteWide: Bool { keyword == nil }
 
-    public var displayKeyword: String { keyword ?? "整站" }
+    public var isAppRule: Bool { app != nil }
+
+    public var displayKeyword: String { keyword ?? (isAppRule ? "整个 App" : "整站") }
 }
 
 public enum SiteRuleMatcher {
@@ -75,11 +84,12 @@ public enum SiteRuleMatcher {
         host == ruleHost || host.hasSuffix("." + ruleHost)
     }
 
-    /// 找最贴合的一条：带关键字的优先于整站，域名长的优先于短的。
+    /// 找最贴合的一条网站规则：带关键字的优先于整站，域名长的优先于短的。
     public static func match(host: String?, label: String?, rules: [SiteRule]) -> SiteRule? {
         guard let host = normalizeHost(host), !rules.isEmpty else { return nil }
         var best: SiteRule?
         for rule in rules {
+            guard rule.app == nil else { continue }
             let ruleHost = normalizeHost(rule.host)
             guard let ruleHost, hostMatches(host, ruleHost: ruleHost) else { continue }
             if let keyword = rule.keyword {
@@ -95,19 +105,56 @@ public enum SiteRuleMatcher {
         return best
     }
 
+    /// 找这个 App 里命中的输入框规则。
+    ///
+    /// 同一个 App 可能配了不止一个框（钉钉：聊天框中文、搜索框英文），
+    /// 所以按关键字挑：带关键字的优先，其次才是 `keyword == nil` 的整 App 规则。
+    public static func match(app: String?, label: String?, rules: [SiteRule]) -> SiteRule? {
+        guard let app, !app.isEmpty, !rules.isEmpty else { return nil }
+        var best: SiteRule?
+        for rule in rules {
+            guard let ruleApp = rule.app,
+                  ruleApp.caseInsensitiveCompare(app) == .orderedSame else { continue }
+            if let keyword = rule.keyword {
+                guard let label, !label.isEmpty,
+                      label.localizedCaseInsensitiveContains(keyword) else {
+                    continue
+                }
+            }
+            if best == nil || (best?.keyword == nil && rule.keyword != nil) {
+                best = rule
+            }
+        }
+        return best
+    }
+
     /// 两条规则是不是指向同一个输入框。
     ///
     /// 关键字都是从不多的几句 placeholder 里截出来的，同一个框的两条规则
     /// 通常一条是另一条的前缀（`输入 / 调用命令` ⊂ `输入 / 调用命令，@ 选择文件…`）。
     /// 只看字符串相等会把它们当成两个框，同一个框就长出两行规则。
     public static func sameField(_ lhs: SiteRule, _ rhs: SiteRule) -> Bool {
-        guard let lHost = normalizeHost(lhs.host), let rHost = normalizeHost(rhs.host),
-              lHost == rHost,
+        guard sameScope(lhs, rhs),
               let lKey = lhs.keyword, let rKey = rhs.keyword else {
             return false
         }
         return lKey.localizedCaseInsensitiveContains(rKey)
             || rKey.localizedCaseInsensitiveContains(lKey)
+    }
+
+    /// 作用域相同：都是同一个 App，或都是同一个域名（子域算不同站，和一键配规则时的粒度一致）
+    private static func sameScope(_ lhs: SiteRule, _ rhs: SiteRule) -> Bool {
+        switch (lhs.app, rhs.app) {
+        case let (l?, r?):
+            return l.caseInsensitiveCompare(r) == .orderedSame
+        case (nil, nil):
+            guard let lHost = normalizeHost(lhs.host), let rHost = normalizeHost(rhs.host) else {
+                return false
+            }
+            return lHost == rHost
+        default:
+            return false
+        }
     }
 
     private static func isMoreSpecific(_ lhs: SiteRule, than rhs: SiteRule?) -> Bool {
@@ -123,20 +170,30 @@ public enum SiteRuleMatcher {
 /// 也该算「两次」。条数有上限，攒不满的老候选会被清掉，不会无限长。
 public struct SiteRuleCandidate: Codable, Sendable, Equatable {
     public var host: String
+    /// App 规则候选的 bundle id；网站候选为 nil
+    public var app: String?
     public var keyword: String
     public var sourceID: String
     public var hits: Int
     public var lastSeen: Date
 
-    public init(host: String, keyword: String, sourceID: String, hits: Int = 1, lastSeen: Date = Date()) {
+    public init(host: String = "",
+                app: String? = nil,
+                keyword: String,
+                sourceID: String,
+                hits: Int = 1,
+                lastSeen: Date = Date()) {
         self.host = host
+        self.app = app
         self.keyword = keyword
         self.sourceID = sourceID
         self.hits = hits
         self.lastSeen = lastSeen
     }
 
-    public var id: String { "\(host)|\(keyword)|\(sourceID)" }
+    public var scope: String { app.map { "app:\($0)" } ?? host }
+
+    public var id: String { "\(scope)|\(keyword)|\(sourceID)" }
 }
 
 /// 从「用户手动换源」里学出输入框级规则。
@@ -221,7 +278,7 @@ public enum SiteRuleLearning {
     public static func dropCandidatesCoveredBy(_ rules: [SiteRule],
                                                _ candidates: inout [SiteRuleCandidate]) {
         let covered = Set(rules.filter { $0.learned == true }
-            .map { "\($0.host)|\($0.keyword ?? "")|\($0.sourceID)" })
+            .map { "\($0.id)|\($0.sourceID)" })
         candidates.removeAll { covered.contains($0.id) }
     }
 
@@ -245,34 +302,64 @@ public enum SiteRuleLearning {
         candidates = order.compactMap { merged[$0] }
     }
 
-    /// 记一次用户手动换源。返回非 nil 表示攒够了，调用方应当落一条正式规则。
-    ///
-    /// 同一个输入框换成了别的源时，之前给另一个源攒的次数直接丢掉：
-    /// 交替使用时两边各攒一半永远攒不满，而「最近一次想用什么」才是最可靠的信号。
+    /// 记一次用户手动换源（网站输入框）。返回非 nil 表示攒够了，调用方应当落一条正式规则。
     @discardableResult
     public static func record(host: String,
                               keyword: String,
                               sourceID: String,
                               candidates: inout [SiteRuleCandidate],
                               now: Date = Date()) -> SiteRule? {
-        guard let normalized = SiteRuleMatcher.normalizeHost(host),
-              !keyword.isEmpty, !sourceID.isEmpty else {
-            return nil
-        }
+        guard let normalized = SiteRuleMatcher.normalizeHost(host) else { return nil }
+        return record(scopeHost: normalized,
+                      app: nil,
+                      keyword: keyword,
+                      sourceID: sourceID,
+                      candidates: &candidates,
+                      now: now)
+    }
+
+    /// 记一次用户手动换源（App 内的输入框）。攒够次数后返回 App 规则。
+    @discardableResult
+    public static func record(app: String,
+                              keyword: String,
+                              sourceID: String,
+                              candidates: inout [SiteRuleCandidate],
+                              now: Date = Date()) -> SiteRule? {
+        guard !app.isEmpty else { return nil }
+        return record(scopeHost: "",
+                      app: app,
+                      keyword: keyword,
+                      sourceID: sourceID,
+                      candidates: &candidates,
+                      now: now)
+    }
+
+    /// 两条入口共用的计数逻辑。作用域只有 host / app 两态，其余完全一样。
+    ///
+    /// 同一个输入框换成了别的源时，之前给另一个源攒的次数直接丢掉：
+    /// 交替使用时两边各攒一半永远攒不满，而「最近一次想用什么」才是最可靠的信号。
+    private static func record(scopeHost: String,
+                               app: String?,
+                               keyword: String,
+                               sourceID: String,
+                               candidates: inout [SiteRuleCandidate],
+                               now: Date) -> SiteRule? {
+        guard !keyword.isEmpty, !sourceID.isEmpty else { return nil }
         expire(&candidates, now: now)
 
         if let index = candidates.firstIndex(where: {
-            $0.host == normalized && $0.keyword == keyword && $0.sourceID == sourceID
+            $0.app == app && $0.host == scopeHost && $0.keyword == keyword && $0.sourceID == sourceID
         }) {
             candidates[index].hits += 1
             candidates[index].lastSeen = now
             guard candidates[index].hits >= threshold else { return nil }
             candidates.remove(at: index)
-            return SiteRule(host: normalized, keyword: keyword, sourceID: sourceID)
+            return SiteRule(host: scopeHost, app: app, keyword: keyword, sourceID: sourceID)
         }
 
-        candidates.removeAll { $0.host == normalized && $0.keyword == keyword }
-        candidates.append(SiteRuleCandidate(host: normalized,
+        candidates.removeAll { $0.app == app && $0.host == scopeHost && $0.keyword == keyword }
+        candidates.append(SiteRuleCandidate(host: scopeHost,
+                                           app: app,
                                            keyword: keyword,
                                            sourceID: sourceID,
                                            hits: 1,

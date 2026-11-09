@@ -131,7 +131,7 @@ public struct MissingSource: Sendable, Equatable, Identifiable {
     public var breakdown: String {
         var parts: [String] = []
         if appCount > 0 { parts.append("\(appCount) 个 App") }
-        if siteRuleCount > 0 { parts.append("\(siteRuleCount) 条网站规则") }
+        if siteRuleCount > 0 { parts.append("\(siteRuleCount) 条输入框规则") }
         if candidateCount > 0 { parts.append("\(candidateCount) 条学习记录") }
         if addressBar { parts.append("地址栏") }
         return parts.isEmpty ? "没有引用" : parts.joined(separator: "、")
@@ -161,9 +161,9 @@ public enum InputSourceResolver {
     /// 目标输入源。nil 表示「不干预」——没规则也没记忆时保持当前源，
     /// 这比强行切回默认源更不容易和用户手动切换打架。
     ///
-    /// 优先级：忽略 > 地址栏 > 网站规则 > App 规则 > 记忆。
-    /// 前三者都比「这个 App 该用什么」更具体：同样是 Chrome，敲网址、在 GitHub 写评论、
-    /// 在中文站写内容，期望的源本来就不同。
+    /// 优先级：忽略 > 地址栏 > 网站规则 > App 输入框规则 > App 规则 > 记忆。
+    /// 越具体越优先：同样是 Chrome，敲网址、在 GitHub 写评论、在中文站写内容，
+    /// 期望的源本来就不同；同样是钉钉，聊天框和搜索框也不同。
     public static func target(for key: String,
                               settings: InputSourceSettings,
                               inAddressBar: Bool = false,
@@ -177,6 +177,11 @@ public enum InputSourceResolver {
         if let site = SiteRuleMatcher.match(host: host, label: fieldLabel, rules: settings.siteRules),
            !site.sourceID.isEmpty {
             return site.sourceID
+        }
+        // key 就是 bundle id（拿不到时为 pid:…，不会和规则里的 bundle id 撞）
+        if let appRule = SiteRuleMatcher.match(app: key, label: fieldLabel, rules: settings.siteRules),
+           !appRule.sourceID.isEmpty {
+            return appRule.sourceID
         }
         if let rule = settings.rules[key], !rule.isEmpty {
             return rule

@@ -7,7 +7,7 @@ import AppKit
 @MainActor
 final class InputSourceSettingsPage: NSView, NSSearchFieldDelegate {
     var onChange: (() -> Void)?
-    /// 跳到「网页输入法」页。网站规则放在单独一页，但入口必须留在这一页，
+    /// 跳到「输入框规则」页。网站/App 规则放在单独一页，但入口必须留在这一页，
     /// 否则用户根本不知道还有那个页面。
     var onOpenSiteRules: (() -> Void)?
 
@@ -147,8 +147,8 @@ final class InputSourceSettingsPage: NSView, NSSearchFieldDelegate {
                 SettingsLayout.row("浏览器地址栏",
                                    detail: "焦点进地址栏时换源，敲网址不用先经过中文候选",
                                    control: addressBarPopup),
-                SettingsLayout.row("网站与输入框",
-                                   detail: "指定某个网站、某个输入框用哪个输入法",
+                SettingsLayout.row("网站与 App 输入框",
+                                   detail: "指定某个网站、某个 App 里的某个输入框用哪个输入法",
                                    control: siteRulesButton),
                 SettingsLayout.row("输入法记忆", control: memoryRow()),
             ]),
