@@ -50,6 +50,13 @@ public final class AppShell: NSObject {
     /// 设置窗打开期间是否已经占着 regular 激活策略（防止重复计数）
     private var preferencesHoldingRegular = false
     private var annotatorHoldingRegular = false
+    /// 一次截图请求是否还在飞行中：从按下热键算起，到覆盖层交出选区为止。
+    ///
+    /// 抓帧是异步的（ScreenCaptureKit 常要 300ms 起步，负载高时 1s 以上）。
+    /// 这期间再进来一次同样的请求，它的覆盖层会在第一次已经框完之后才铺开 ——
+    /// 用户看到的就是「刚选完，又是一层框」，而且第一次的结果被第二次顶掉。
+    /// 所以飞行期间的重复请求直接丢弃。
+    private var captureInFlight = false
 
     public override init() {
         super.init()
@@ -926,6 +933,13 @@ capturesAudio: recordingSettings.capturesAudio,
     }
 
     private func capture(intent: CaptureIntent, action: CaptureAction = .copy) {
+        // 上一场还没交出选区：丢掉这次请求，别让两层覆盖层叠着（见 captureInFlight）
+        if captureInFlight {
+            ActionLog.action("capture.skip",
+                             "reason=inFlight intent=\(intent.logText) action=\(action.logText)")
+            return
+        }
+        captureInFlight = true
         // 尺子开着时按截图热键：先把尺子收掉，别让两层冻结帧打架
         ruler?.cancel()
         // 倒计时还没走完又触发别的截图：以新的为准，别两个面板叠着
@@ -938,6 +952,8 @@ capturesAudio: recordingSettings.capturesAudio,
         Task { [weak self] in
             guard let self else { return }
             let outcome = await captureSession.begin(intent: intent, action: action)
+            // 选区已到手，后续（OCR/贴图/标注）不该再挡住新的截图
+            self.captureInFlight = false
             let ms = Int(Date().timeIntervalSince(started) * 1000)
             switch outcome {
             case .cancelled:
