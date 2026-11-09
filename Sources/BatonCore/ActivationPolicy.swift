@@ -33,6 +33,15 @@ public final class ActivationPolicyController {
         app.setActivationPolicy(.accessory)
     }
 
+    /// 已经持有 regular 时，只把 App 重新拉到前台。
+    ///
+    /// 设置窗被别的 App 盖住后再从菜单打开，窗口一直都在，走的不是 `enterRegular`；
+    /// 没人再调一次 activate 的话，窗口就永远压在别人底下（看起来像「点了没反应」）。
+    public func focus() {
+        guard regularHolds > 0 else { return }
+        app.activate(ignoringOtherApps: true)
+    }
+
     public func withRegular<T>(_ body: @MainActor () async -> T) async -> T {
         enterRegular()
         defer { leaveRegular() }

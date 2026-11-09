@@ -103,12 +103,29 @@ public final class TranslateCoordinator {
 
     /// 只做 OCR，不翻译。
     public func recognize(image: CGImage, silent: Bool) async {
+        let started = CFAbsoluteTimeGetCurrent()
+        // 先把窗口摆出来：识别（尤其云端）加二维码扫描常在 1s 以上，
+        // 这段时间屏幕上什么都不动，看着就像还停在框选里。
+        if !silent { ocrPanel.showLoading(image: image, engine: ocrName) }
+        ActionLog.action("ocr.begin", "engine=\(ocrName) px=\(image.width)x\(image.height)")
+
+        func finish(failed: Bool, _ detail: String) {
+            let ms = Int((CFAbsoluteTimeGetCurrent() - started) * 1000)
+            if failed {
+                ActionLog.fail("ocr.fail", "ms=\(ms) \(detail)")
+            } else {
+                ActionLog.result("ocr.done", "ms=\(ms) \(detail)")
+            }
+        }
+
         do {
             let result = try await recognize(in: image)
             // 二维码跟文字一起出：截图里常常只有一个码，没有内容可选
             let codes = await QRScanner.scan(image)
             let text = result.text
             guard !text.isEmpty || !codes.isEmpty else {
+                if !silent { ocrPanel.hide() }
+                finish(failed: false, "empty=true")
                 panel.showFailure(message: "图里没有识别到文字，也没有二维码。",
                                   source: "",
                                   languages: languages,
@@ -127,7 +144,10 @@ public final class TranslateCoordinator {
                               codes: codes)
                 panel.hide()
             }
+            finish(failed: false, "lines=\(result.lines.count) codes=\(codes.count)")
         } catch {
+            if !silent { ocrPanel.hide() }
+            finish(failed: true, "reason=\(error.localizedDescription)")
             panel.showFailure(message: "识别失败：\(error.localizedDescription)",
                               source: "",
                               languages: languages,

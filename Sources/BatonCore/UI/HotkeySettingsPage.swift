@@ -266,6 +266,16 @@ private final class HotkeyRecorder: NSButton {
 
     override var acceptsFirstResponder: Bool { true }
 
+    /// 录快捷键时先截住组合键。
+    ///
+    /// ⌘C / ⌘V / ⌘X / ⌘A 现在是主菜单的 key equivalent，菜单先拿到的话
+    /// 这几个组合就录不进来，按钮会一直停在「按下快捷键…」。
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard isRecording else { return super.performKeyEquivalent(with: event) }
+        keyDown(with: event)
+        return true
+    }
+
     override func becomeFirstResponder() -> Bool { true }
 
     override func resignFirstResponder() -> Bool {

@@ -88,23 +88,35 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
     }
 
     public func show(tab index: Int = 0) {
+        let isNew = window == nil
         let window = self.window ?? buildWindow()
         self.window = window
         reload()
         selectPage(index, animated: false)
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        reveal(window, isNew: isNew)
     }
 
     /// 按标题开页：页签下标会随页面增减而变，从外面跳页用标题才不会指错。
     public func show(titled title: String) {
+        let isNew = window == nil
         let window = self.window ?? buildWindow()
         self.window = window
         reload()
         selectPage(titled: title)
-        window.center()
+        reveal(window, isNew: isNew)
+    }
+
+    /// 把窗口真正摆到用户眼前。
+    ///
+    /// `makeKeyAndOrderFront` 对「窗口还在、但 App 在后台」这种状态不够用：
+    /// 它只管把窗排到前面，App 不激活的话窗口拿不到焦点，还可能留在原来的 Space 上。
+    /// 三条一起上：从 Dock 里拿出来、跟到当前 Space、再把 App 拉到前台。
+    private func reveal(_ window: NSWindow, isNew: Bool) {
+        // 只在第一次摆中间：之后用户挪到哪就是哪，每次打开都跳回屏幕中间很烦
+        if isNew { window.center() }
+        if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -137,6 +149,9 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
         window.title = "Baton 设置"
         window.isReleasedWhenClosed = false
         window.delegate = self
+        // 被拖到别的 Space 之后，从菜单再打开要能跟到当前 Space，
+        // 否则窗口是「打开了」，但人还在另一屏上看不见
+        window.collectionBehavior = [.moveToActiveSpace]
         // 工具条紧贴标题栏、图标在上文字在下，和系统设置一个样子
         window.toolbarStyle = .preference
 

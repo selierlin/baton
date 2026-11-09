@@ -255,6 +255,11 @@ public final class OverlayController {
         }
         windows.removeAll()
         views.removeAll()
+        // 收起时鼠标往往一动没动，系统不会重算 cursor rect，十字光标就留在屏幕上，
+        // 看起来像还在框选。这里显式换回来。
+        if NSCursor.current === NSCursor.crosshair {
+            NSCursor.arrow.set()
+        }
         OverlayRecovery.endSession()
     }
 }

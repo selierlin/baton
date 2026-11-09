@@ -60,6 +60,8 @@ public final class AppShell: NSObject {
         started = true
 
         NSApp.setActivationPolicy(.accessory)
+        // 文本编辑的 ⌘V / ⌘C 靠主菜单的 key equivalent，没有菜单连粘都粘不进去
+        MainMenu.install()
 
         ActionLog.app("launch", "screen=\(CGPreflightScreenCaptureAccess()) ax=\(AXIsProcessTrusted())")
         HangWatchdog.shared.start()
@@ -564,6 +566,9 @@ public final class AppShell: NSObject {
         if !preferencesHoldingRegular {
             activation.enterRegular()
             preferencesHoldingRegular = true
+        } else {
+            // 窗口还开着、只是被别的 App 盖住了：策略已经是 regular，得把 App 拉到前台
+            activation.focus()
         }
         if let title {
             prefs.show(titled: title)

@@ -752,6 +752,18 @@ public final class AnnotateCanvasView: NSView {
 
     // MARK: - 键盘
 
+    /// ⌘C 也走菜单：主菜单里的「复制」是 key equivalent，按键先到菜单、到不了 `keyDown`。
+    /// 画布里 ⌘C 是「复制带标注的图」，接到同一条命令上，行为不变。
+    @objc public func copy(_ sender: Any?) {
+        // 正在输入文字：直接交给文本框的 field editor（它实现了 copy:），
+        // 不走 sendAction(to: nil)，免得又回到自己身上绕成递归
+        if let editor = textField?.currentEditor() {
+            editor.tryToPerform(#selector(NSText.copy(_:)), with: sender)
+            return
+        }
+        onCommand?(.copy)
+    }
+
     public override func keyDown(with event: NSEvent) {
         // 文字输入中不抢键
         if textField != nil {

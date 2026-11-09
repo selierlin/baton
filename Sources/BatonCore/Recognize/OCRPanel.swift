@@ -51,6 +51,22 @@ public final class OCRPanelController {
     public func show(image: CGImage, lines: [OCRLine], text: String, engine: String,
                      copiedHint: String?, codes: [QRCode] = []) {
         content.render(image: image, lines: lines, codes: codes, text: text, engine: engine)
+        present()
+        if let copiedHint {
+            content.showToast(copiedHint)
+        }
+    }
+
+    /// 选完立刻把窗口摆出来，先给个「正在识别」。
+    ///
+    /// 识别（尤其云端）加上二维码扫描常在 1s 以上，这段时间如果屏幕上什么都不动，
+    /// 用户会以为还停在框选里，而不是「已经在干活了」。
+    public func showLoading(image: CGImage, engine: String) {
+        content.renderLoading(image: image, engine: engine)
+        present()
+    }
+
+    private func present() {
         // 窗口比浮窗大，先摆到鼠标所在屏的中间偏上，别一半在屏幕外
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
@@ -68,9 +84,6 @@ public final class OCRPanelController {
                 context.duration = 0.16
                 panel.animator().alphaValue = 1
             }
-        }
-        if let copiedHint {
-            content.showToast(copiedHint)
         }
     }
 
@@ -227,13 +240,7 @@ private final class OCRContentView: NSView {
         self.codes = codes
         rawText = text
         mergedText = Self.mergeParagraphs(lines.isEmpty ? [text] : lines.map(\.text))
-        // 用 NSBitmapImageRep 自己包一层：`NSImage(cgImage:size:)` 会按屏幕 scale 再放大一档，
-        // 画布拿到的 pixelsWide 变成两倍，识别框就只能画在左上角一小块里。
-        let rep = NSBitmapImageRep(cgImage: image)
-        rep.size = NSSize(width: image.width, height: image.height)
-        let preview = NSImage(size: rep.size)
-        preview.addRepresentation(rep)
-        canvas.image = preview
+        applyPreview(image)
         canvas.lines = lines
         canvas.codes = codes
         engineButton.title = engine
@@ -242,6 +249,37 @@ private final class OCRContentView: NSView {
         apply(mode: mode)
         needsLayout = true
         layoutSubtreeIfNeeded()
+    }
+
+    /// 选完先摆图 + 「正在识别…」，结果回来再走 `render` 覆盖。
+    func renderLoading(image: CGImage, engine: String) {
+        lines = []
+        codes = []
+        rawText = ""
+        mergedText = ""
+        applyPreview(image)
+        canvas.lines = []
+        canvas.codes = []
+        engineButton.title = engine
+        codeTextView.string = ""
+        updateCodeSection()
+        // 这段时间文本框里放的是状态字，别让它被当成识别结果改写
+        textView.isEditable = false
+        textView.string = "正在识别…"
+        textView.font = NSFont.systemFont(ofSize: 17)
+        textView.textColor = .secondaryLabelColor
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+    }
+
+    private func applyPreview(_ image: CGImage) {
+        // 用 NSBitmapImageRep 自己包一层：`NSImage(cgImage:size:)` 会按屏幕 scale 再放大一档，
+        // 画布拿到的 pixelsWide 变成两倍，识别框就只能画在左上角一小块里。
+        let rep = NSBitmapImageRep(cgImage: image)
+        rep.size = NSSize(width: image.width, height: image.height)
+        let preview = NSImage(size: rep.size)
+        preview.addRepresentation(rep)
+        canvas.image = preview
     }
 
     /// 多张码之间空一行：Bob 也是这么排的，挤在一起会看成一条内容。
@@ -279,6 +317,7 @@ private final class OCRContentView: NSView {
         modeSwitch.select(mode)
         canvas.showsBoxes = mode == .split
         // 原图始终留在左边（Bob 也这样），三档只改识别框和文本的排法
+        textView.isEditable = true
         textView.string = mode == .plain ? mergedText : rawText
         textView.font = NSFont.systemFont(ofSize: 17)
         textView.textColor = .labelColor
