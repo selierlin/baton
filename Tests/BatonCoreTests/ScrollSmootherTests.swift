@@ -162,6 +162,7 @@ final class ScrollSmootherEngineTests: XCTestCase {
         settings.duration = 3.2
         settings.deadZone = 0.5
         settings.excludedApps = ["com.example.game", "com.apple.Terminal"]
+        settings.bypassKey = .option
         try store.save(settings)
 
         XCTAssertEqual(store.load(), settings)
@@ -172,6 +173,13 @@ final class ScrollSmootherEngineTests: XCTestCase {
         let json = #"{"enabled":true,"speed":3.6,"duration":4.35,"deadZone":1,"forceMouse":false}"#
         let settings = try JSONDecoder().decode(SmoothScrollSettings.self, from: Data(json.utf8))
         XCTAssertEqual(settings.excludedApps, [])
+    }
+
+    /// 禁用键是后加的字段：老配置里没有，要落回「无」，不能整份解码失败
+    func testMissingBypassKeyDefaultsToNone() throws {
+        let json = #"{"enabled":true,"speed":3.6,"duration":4.35,"deadZone":1}"#
+        let settings = try JSONDecoder().decode(SmoothScrollSettings.self, from: Data(json.utf8))
+        XCTAssertEqual(settings.bypassKey, .none)
     }
 }
 
@@ -288,6 +296,48 @@ final class ScrollSmootherFilterTests: XCTestCase {
         XCTAssertTrue(smoother.consume(sample(deltaY: 2, phase: 1)))
         XCTAssertEqual(smoother.swallowedTicks, 1)
         XCTAssertTrue(smoother.lastDecision?.hasPrefix("已接管") ?? false)
+        smoother.finishGesture()
+    }
+
+    // MARK: - 禁用键
+
+    /// 按住禁用键：事件原样放过，一个都不吞
+    func testBypassKeyPassesThroughRaw() {
+        let smoother = ScrollSmoother(store: nil)
+        smoother.apply { $0.bypassKey = .option }
+
+        XCTAssertFalse(smoother.consume(sample(deltaY: 3, flags: CGEventFlags.maskAlternate.rawValue)))
+        XCTAssertEqual(smoother.swallowedTicks, 0)
+        XCTAssertTrue(smoother.lastDecision?.contains("禁用键") ?? false)
+    }
+
+    /// 没按禁用键时照常接管
+    func testWithoutBypassKeyStillSmoothed() {
+        let smoother = ScrollSmoother(store: nil)
+        smoother.apply { $0.bypassKey = .option }
+
+        XCTAssertTrue(smoother.consume(sample(deltaY: 3)))
+        XCTAssertEqual(smoother.swallowedTicks, 1)
+        smoother.finishGesture()
+    }
+
+    /// 配的是 ⌥，那 ⌘ 和 ⇧ 不该被误判
+    func testOtherModifiersAreNotMistakenForBypass() {
+        let smoother = ScrollSmoother(store: nil)
+        smoother.apply { $0.bypassKey = .option }
+
+        XCTAssertTrue(smoother.consume(sample(deltaY: 3, flags: CGEventFlags.maskCommand.rawValue)))
+        smoother.finishGesture()
+        XCTAssertTrue(smoother.consume(sample(deltaY: 3, flags: CGEventFlags.maskShift.rawValue)))
+        smoother.finishGesture()
+    }
+
+    /// 默认「无」时不做任何额外判断，照常平滑
+    func testDefaultBypassKeyDoesNothing() {
+        let smoother = ScrollSmoother(store: nil)
+        XCTAssertEqual(smoother.settings.bypassKey, .none)
+
+        XCTAssertTrue(smoother.consume(sample(deltaY: 3, flags: CGEventFlags.maskAlternate.rawValue)))
         smoother.finishGesture()
     }
 

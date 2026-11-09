@@ -89,6 +89,16 @@ public final class ScrollSmoother {
         }
         guard sample.deltaX != 0 || sample.deltaY != 0 else { return false }
 
+        // 禁用键：按住时原始事件直接交给 App。
+        // 还要把正在跑的尾巴停掉——不然手指按下去的瞬间，上一格的惯性还在往下滑，
+        // 想「精确定位」的时候反而更飘。
+        if let flag = settings.bypassKey.flag,
+           CGEventFlags(rawValue: sample.flags).contains(flag) {
+            finishGesture()
+            lastDecision = "按住 \(settings.bypassKey.title)（禁用键），不接管"
+            return false
+        }
+
         // 排除名单优先于一切判定：用户点名不要动的 App，连相位判断都不做，原事件直接放行。
         // 名单为空时一次查询都不发，这条分支对绝大多数人零成本。
         if !settings.excludedApps.isEmpty,

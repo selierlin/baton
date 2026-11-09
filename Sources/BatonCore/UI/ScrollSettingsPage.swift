@@ -12,6 +12,8 @@ final class ScrollSettingsPage: NSView {
     var onTuning: ((Double, Double) -> Void)?
     /// 「我的鼠标没被识别」兜底开关
     var onForceMouseChange: ((Bool) -> Void)?
+    /// 禁用键变化：按住它时不做平滑
+    var onBypassKeyChange: ((ScrollBypassKey) -> Void)?
     /// 排除名单变化（bundle id 列表，已排序）
     var onExcludeChange: (([String]) -> Void)?
     /// 读当前值，用于页面刷新
@@ -24,6 +26,7 @@ final class ScrollSettingsPage: NSView {
                                            target: nil, action: nil)
     private let distanceSlider = NSSlider()
     private let durationSlider = NSSlider()
+    private let bypassPopup = NSPopUpButton()
     private let distanceValue = NSTextField(labelWithString: "")
     private let durationValue = NSTextField(labelWithString: "")
     private let diagnosticLabel = NSTextField(labelWithString: "（滚一下滚轮，这里会显示判定结果）")
@@ -72,6 +75,14 @@ final class ScrollSettingsPage: NSView {
         forceMouseCheck.font = .systemFont(ofSize: 11)
         forceMouseCheck.translatesAutoresizingMaskIntoConstraints = false
 
+        // 禁用键：按住时滚轮完全交回系统，适合画布微调、地图逐级缩放这类要精确的手势
+        bypassPopup.addItems(withTitles: ScrollBypassKey.allCases.map(\.title))
+        bypassPopup.target = self
+        bypassPopup.action = #selector(bypassChanged)
+        bypassPopup.font = .systemFont(ofSize: 12)
+        bypassPopup.translatesAutoresizingMaskIntoConstraints = false
+        bypassPopup.widthAnchor.constraint(equalToConstant: 110).isActive = true
+
         // 「滚一下看看」的现场诊断：不带这个，用户只能说「没效果」，没法定位是哪一环断的
         diagnosticLabel.font = .systemFont(ofSize: 11)
         diagnosticLabel.textColor = .secondaryLabelColor
@@ -100,6 +111,8 @@ final class ScrollSettingsPage: NSView {
                                    control: smoothSwitch),
                 SettingsLayout.row("每格滚动", detail: "滚轮转一格走多远", control: trailing(distanceSlider, distanceValue)),
                 SettingsLayout.row("平滑度", detail: "越大尾巴越长，越小越跟手", control: trailing(durationSlider, durationValue)),
+                SettingsLayout.row("禁用键", detail: "按住它滚动时不做平滑，保持系统原样",
+                                   control: bypassPopup),
                 SettingsLayout.plain(forceMouseCheck),
                 SettingsLayout.plain(diagnosticLabel),
             ]),
@@ -118,6 +131,8 @@ final class ScrollSettingsPage: NSView {
             distanceSlider.doubleValue = settings.pointsPerTick
             durationSlider.doubleValue = settings.duration
             forceMouseCheck.state = settings.forceMouse ? .on : .off
+            // 按标题选，不按下标：配置里存的是枚举值，下标和顺序绑在一起太脆
+            bypassPopup.selectItem(withTitle: settings.bypassKey.title)
             rebuildExcludedApps(settings.excludedApps)
         }
         updateTuning()
@@ -244,6 +259,7 @@ final class ScrollSettingsPage: NSView {
         distanceSlider.isEnabled = enabled
         durationSlider.isEnabled = enabled
         forceMouseCheck.isEnabled = enabled
+        bypassPopup.isEnabled = enabled
         addExcludeButton.isEnabled = enabled
         excludeStack.isHidden = !enabled
         excludeEmptyLabel.isHidden = !enabled || !(settings?().excludedApps.isEmpty ?? true)
@@ -268,6 +284,12 @@ final class ScrollSettingsPage: NSView {
 
     @objc private func forceMouseChanged() {
         onForceMouseChange?(forceMouseCheck.state == .on)
+    }
+
+    @objc private func bypassChanged() {
+        let index = bypassPopup.indexOfSelectedItem
+        guard index >= 0, index < ScrollBypassKey.allCases.count else { return }
+        onBypassKeyChange?(ScrollBypassKey.allCases[index])
     }
 }
 

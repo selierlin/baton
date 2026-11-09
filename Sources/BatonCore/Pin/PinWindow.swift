@@ -113,7 +113,8 @@ public final class PinController {
     ///   - image: 已合成的位图
     ///   - scale: 原图倍率，用来把像素换成视觉点（2x 图上 1200px 宽在屏幕上是 600pt）
     ///   - screenRect: 原选区屏幕坐标（点，左上原点），有就贴着原位钉住
-    public func pin(_ image: CGImage, scale: CGFloat, near screenRect: CGRect? = nil) {
+    public func pin(_ image: CGImage, scale: CGFloat, near screenRect: CGRect? = nil,
+                    fitFraction: CGFloat = 1) {
         // 藏起来的状态下又贴了新图：先全部恢复，否则新图孤零零一张，
         // 再按一次「显示所有贴图」反而会把它也藏掉，状态就对不上了
         if isHidden { setHidden(false) }
@@ -124,6 +125,7 @@ public final class PinController {
                                              opacity: 1,
                                              store: store,
                                              pinID: nil,
+                                             fitFraction: fitFraction,
                                              onClose: { [weak self] id in
             self?.pins.removeAll { $0.id == id }
         })
@@ -169,8 +171,8 @@ public final class PinController {
 
     /// 从磁盘上的图片文件贴图（Finder 拖入、⌘O 打开都走这里）。
     ///
-    /// 文件图没有「屏幕倍率」概念，按 1px = 1pt 处理；太大的图由 `initialRect()`
-    /// 自己缩到屏幕 80% 内，不至于一贴就盖满整块屏。
+    /// 文件图没有「屏幕倍率」概念，按 1px = 1pt 处理；太大的图缩到屏幕 80% 内，
+    /// 不至于一贴就盖满整块屏。截图贴图不走这条路，那边保持 1:1。
     @discardableResult
     public func pinFile(_ url: URL) -> Bool {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
@@ -180,7 +182,7 @@ public final class PinController {
             ActionLog.fail("pin.file", "unreadable=\(url.lastPathComponent)")
             return false
         }
-        pin(image, scale: 1)
+        pin(image, scale: 1, fitFraction: 0.8)
         return true
     }
 
@@ -199,6 +201,8 @@ final class PinWindowController: NSObject, NSWindowDelegate {
     private let source: PinImageSource
     private let baseSize: CGSize
     private let imageScale: CGFloat
+    /// 首次落位时最多占屏的比例：截图给 1（原样），文件图给 0.8。
+    private let fitFraction: CGFloat
     private let anchor: CGRect?
     private let initialFrame: CGRect?
     private let initialOpacity: Double
@@ -233,10 +237,15 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         var isThumbnail: Bool
     }
 
-    /// 屏内「适配」倍率：太大就缩到屏宽的 80%。
-    static func fitZoom(baseSize: CGSize, in visible: CGRect) -> CGFloat {
+    /// 屏内「适配」倍率：超出给定区域才等比缩小。
+    ///
+    /// 截图贴图传 `fraction: 1` —— 1:1 是贴图最核心的用途（对着原图描、比位置），
+    /// 原来按 80% 收，选得越大缩得越明显，看起来像「贴上去就小了一圈」。
+    /// 文件图没有「和屏幕等大」这回事，传 0.8 留点余量，别一贴就盖满屏。
+    static func fitZoom(baseSize: CGSize, in bounds: CGRect, fraction: CGFloat = 1) -> CGFloat {
         guard baseSize.width > 0, baseSize.height > 0 else { return 1 }
-        return min(1, (visible.width * 0.8) / baseSize.width, (visible.height * 0.8) / baseSize.height)
+        return min(1, (bounds.width * fraction) / baseSize.width,
+                   (bounds.height * fraction) / baseSize.height)
     }
 
     /// 从库里恢复时算倍率。
@@ -263,9 +272,11 @@ final class PinWindowController: NSObject, NSWindowDelegate {
     init(source: PinImageSource, scale: CGFloat, anchor: CGRect?, initialFrame: CGRect?,
          opacity: Double, store: PinStore?, pinID: String?,
          baseZoom: CGFloat? = nil, isThumbnail: Bool = false,
+         fitFraction: CGFloat = 1,
          onClose: @escaping (UUID) -> Void) {
         self.source = source
         self.imageScale = max(scale, 1)
+        self.fitFraction = fitFraction
         self.baseSize = CGSize(width: source.pixelSize.width / max(scale, 1),
                                height: source.pixelSize.height / max(scale, 1))
         self.anchor = anchor
@@ -595,8 +606,10 @@ final class PinWindowController: NSObject, NSWindowDelegate {
     private func initialRect() -> CGRect {
         let screen = screenForAnchor()
         let visible = screen?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
-        // 太大的图先缩到屏内，否则贴图会盖满整块屏幕
-        let fit = Self.fitZoom(baseSize: baseSize, in: visible)
+        // 适配按整块屏幕算，不按「可用区域」：截了整屏（含菜单栏那条）时，
+        // 用 visibleFrame 会算出 0.97 这种倍率，贴出来又小一圈。
+        let bounds = screen?.frame ?? visible
+        let fit = Self.fitZoom(baseSize: baseSize, in: bounds, fraction: fitFraction)
         zoom = fit
         let size = CGSize(width: baseSize.width * fit, height: baseSize.height * fit)
 

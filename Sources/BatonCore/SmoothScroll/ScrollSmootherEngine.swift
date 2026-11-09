@@ -1,6 +1,39 @@
 import CoreGraphics
 import Foundation
 
+/// 「禁用键」：按住它滚轮就完全交回系统。
+///
+/// 对应 Mos 的同名设置。有些操作需要精确定位（画布微调、地图逐级缩放、看代码时
+/// 一行一行滚），平滑的尾巴反而碍事，按住这个键就是原始手感。
+public enum ScrollBypassKey: String, Codable, Sendable, CaseIterable {
+    case none
+    case option
+    case control
+    case command
+    case shift
+
+    /// 对应的修饰键标志位。`none` 时返回 nil，热路径上直接跳过判断。
+    public var flag: CGEventFlags? {
+        switch self {
+        case .none: return nil
+        case .option: return .maskAlternate
+        case .control: return .maskControl
+        case .command: return .maskCommand
+        case .shift: return .maskShift
+        }
+    }
+
+    public var title: String {
+        switch self {
+        case .none: return "无"
+        case .option: return "⌥ Option"
+        case .control: return "⌃ Control"
+        case .command: return "⌘ Command"
+        case .shift: return "⇧ Shift"
+        }
+    }
+}
+
 /// 平滑滚动参数。照着 Mos 的三段式（归一化 → 倍率 → 比例逼近）复刻。
 ///
 /// 只作用于**离散滚轮**事件。触控板/妙控板本来就是连续事件，系统自己会插值并带惯性，
@@ -37,6 +70,9 @@ public struct SmoothScrollSettings: Codable, Sendable, Equatable {
     /// 按**指针下的 App** 判断，不是前台 App——在后台窗口上滚轮也要放行。
     public var excludedApps: [String]
 
+    /// 按住就临时关掉平滑的修饰键（Mos 的「禁用键」）。
+    public var bypassKey: ScrollBypassKey
+
     /// 一格滚多远，给界面显示用。
     public var pointsPerTick: Double { Self.referenceStep * speed }
 
@@ -58,17 +94,19 @@ public struct SmoothScrollSettings: Codable, Sendable, Equatable {
                 duration: Double = 4.35,
                 deadZone: Double = 1.0,
                 forceMouse: Bool = false,
-                excludedApps: [String] = []) {
+                excludedApps: [String] = [],
+                bypassKey: ScrollBypassKey = .none) {
         self.enabled = enabled
         self.speed = speed
         self.duration = duration
         self.deadZone = deadZone
         self.forceMouse = forceMouse
         self.excludedApps = excludedApps
+        self.bypassKey = bypassKey
     }
 
     private enum CodingKeys: String, CodingKey {
-        case enabled, speed, duration, deadZone, forceMouse, excludedApps
+        case enabled, speed, duration, deadZone, forceMouse, excludedApps, bypassKey
         // 老版本的字段，只为迁移时能认出来
         case pointsPerLine, maxPending
     }
@@ -93,6 +131,7 @@ public struct SmoothScrollSettings: Codable, Sendable, Equatable {
             deadZone = try container.decodeIfPresent(Double.self, forKey: .deadZone) ?? fallback.deadZone
             forceMouse = try container.decodeIfPresent(Bool.self, forKey: .forceMouse) ?? fallback.forceMouse
             excludedApps = try container.decodeIfPresent([String].self, forKey: .excludedApps) ?? fallback.excludedApps
+            bypassKey = try container.decodeIfPresent(ScrollBypassKey.self, forKey: .bypassKey) ?? fallback.bypassKey
             return
         }
 
@@ -102,6 +141,7 @@ public struct SmoothScrollSettings: Codable, Sendable, Equatable {
         deadZone = try container.decodeIfPresent(Double.self, forKey: .deadZone) ?? fallback.deadZone
         forceMouse = try container.decodeIfPresent(Bool.self, forKey: .forceMouse) ?? fallback.forceMouse
         excludedApps = try container.decodeIfPresent([String].self, forKey: .excludedApps) ?? fallback.excludedApps
+        bypassKey = try container.decodeIfPresent(ScrollBypassKey.self, forKey: .bypassKey) ?? fallback.bypassKey
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -112,6 +152,7 @@ public struct SmoothScrollSettings: Codable, Sendable, Equatable {
         try container.encode(deadZone, forKey: .deadZone)
         try container.encode(forceMouse, forKey: .forceMouse)
         try container.encode(excludedApps, forKey: .excludedApps)
+        try container.encode(bypassKey, forKey: .bypassKey)
     }
 }
 
