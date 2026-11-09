@@ -1,0 +1,18 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift 版本
+        run: swift --version
+      - name: 单元测试
+        run: swift test
+      - name: 打包 .app
+        run: ./Scripts/make-app.sh release
