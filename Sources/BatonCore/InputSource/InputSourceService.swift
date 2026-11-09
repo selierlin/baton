@@ -30,6 +30,8 @@ public final class InputSourceService {
     /// 当前源是不是被地址栏 / 网站规则定下的。这时的源不代表用户对这个 App 的习惯，
     /// 记进记忆会把它冲掉（比如 GitHub 里写中文评论，会把 GitHub 的记忆写死成中文）
     private var suppressMemory = false
+    /// 上一次处理过的焦点元素身份。用来判断「文案没了」是同一个框的事情，还是换了框
+    private var lastFieldKey: String?
     /// 上一次「我们自己换的源」。换源通知分不清是谁换的，靠它把 Baton 自己的动作排掉，
     /// 否则进输入框时自动切的那一下会被当成用户偏好学进去
     private var lastSelfSwitchAt: Date?
@@ -528,12 +530,30 @@ public final class InputSourceService {
         // 换了 App，地址栏 / 网站规则的状态作废；上一次还在等延迟的切换也作废
         inAddressBar = false
         suppressMemory = false
+        lastFieldKey = nil
         pendingSwitch?.cancel()
         pendingSwitch = nil
 
         guard settings.enabled else { return }
         guard let target = InputSourceResolver.target(for: key, settings: settings) else { return }
         applyTarget(target, key: key, appName: app.name ?? key)
+    }
+
+    /// 「还在这块输入框里、但读不到文案」时要不要保持现状。
+    ///
+    /// 原生输入框的 placeholder 常常「有字就消失」：焦点没动，文案从「搜索」变成空，
+    /// 这时候按「没命中规则」回退到 App 默认源，等于用户打第一个字就被弹回中文。
+    ///
+    /// 但换到另一个读不到文案的框（钉钉的聊天框就是这样，一个文案属性都没有）必须重新判断，
+    /// 否则会带着上一个框定下的源进去；而上下文之后不再变化，也就再也没有机会切回来。
+    /// 两种情况的区别只有元素身份，所以身份读不到时按老办法保守处理。
+    static func keepsCurrentSource(context: BrowserContext,
+                                   suppressMemory: Bool,
+                                   lastFieldKey: String?) -> Bool {
+        guard context.kind == .field, suppressMemory else { return false }
+        guard context.label?.isEmpty ?? true else { return false }
+        guard let key = context.fieldKey else { return true }
+        return key == lastFieldKey
     }
 
     /// 焦点上下文变了：进/出地址栏、点到某个输入框、切到一个网站或 App。
@@ -552,12 +572,12 @@ public final class InputSourceService {
 
         let inBar = context.kind == .addressBar
 
-        // 原生输入框的 placeholder 常常「有字就消失」：焦点没动，文案从「搜索」变成空，
-        // 这时候按「没命中规则」回退到 App 默认源，等于用户打第一个字就被弹回中文。
-        // 所以「还在这块输入框里、但读不到文案」时保持现状，也不许写记忆。
-        if !inBar, context.kind == .field, (context.label?.isEmpty ?? true), suppressMemory {
+        if Self.keepsCurrentSource(context: context,
+                                   suppressMemory: suppressMemory,
+                                   lastFieldKey: lastFieldKey) {
             return
         }
+        lastFieldKey = context.fieldKey
 
         // 有域名就是浏览器里的网页，按网站规则走；普通 App 没有域名，看 App 输入框规则
         let site = inBar

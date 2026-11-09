@@ -332,19 +332,18 @@ final class SiteRulesSettingsPage: NSView {
             return
         }
 
-        // 普通 App：只认「焦点落在文本框」，且必须有可读文案（没文案就没法限定到这个框）
+        // 普通 App：只认「焦点落在文本框」。读不到文案就退成整 App 规则——
+        // 钉钉这类自绘 App 的聊天框一个文案属性都没有，不给回退就完全没法配
         let field = BrowserContextReader.readField(pid: front.processIdentifier)
         guard field.kind == .field else { return }
+        stopCapture()
+        let scope = SiteRuleEditorView.Scope.app(bundleID: bundleID,
+                                                name: front.localizedName ?? bundleID)
         guard let label = field.label, !label.isEmpty else {
-            stopCapture()
-            captureNote.stringValue = "这个输入框没有可读的提示文案，没法限定到它。可以停在别的输入框再采一次。"
+            presentEditor(scope: scope, host: "", keyword: nil, capturedField: false)
             return
         }
-        stopCapture()
-        presentEditor(scope: .app(bundleID: bundleID, name: front.localizedName ?? bundleID),
-                      host: "",
-                      keyword: label,
-                      capturedField: true)
+        presentEditor(scope: scope, host: "", keyword: label, capturedField: true)
     }
 
     private func updateCaptureNote() {
@@ -375,7 +374,9 @@ final class SiteRulesSettingsPage: NSView {
             ? (capturedField ? "新增 App 输入框规则（已采集输入框）" : "新增 App 输入框规则")
             : (capturedField ? "新增网站规则（已采集输入框）" : "新增网站规则（整站）")
         if isApp {
-            alert.informativeText = "关键字按「包含」匹配输入框文案。同一个 App 可以配多条：聊天框一个源、搜索框另一个源。"
+            alert.informativeText = capturedField
+                ? "关键字按「包含」匹配输入框文案。同一个 App 可以配多条：聊天框一个源、搜索框另一个源。"
+                : "这个输入框读不到提示文案，先按整 App 建：该 App 里没被更具体规则命中的输入框都用这个源。"
         } else {
             alert.informativeText = capturedField
                 ? "关键字按「包含」匹配输入框文案，站点改文案后要回来改。留空则整站生效。"

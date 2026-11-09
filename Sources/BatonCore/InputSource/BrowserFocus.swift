@@ -20,11 +20,15 @@ public struct BrowserContext: Equatable, Sendable {
     public let host: String?
     /// 焦点输入框上能读到的文案（placeholder / title / description / identifier 里第一个非空的）
     public let label: String?
+    /// 焦点元素的身份，只在读普通 App 时有值。用来区分「还是同一个框，只是文案没了」
+    /// 和「换到了另一个读不到文案的框」——两者的后续处理完全相反。
+    public let fieldKey: String?
 
-    public init(kind: Kind, host: String? = nil, label: String? = nil) {
+    public init(kind: Kind, host: String? = nil, label: String? = nil, fieldKey: String? = nil) {
         self.kind = kind
         self.host = host
         self.label = label
+        self.fieldKey = fieldKey
     }
 
     public static let unknown = BrowserContext(kind: .unknown)
@@ -148,7 +152,18 @@ public enum BrowserContextReader {
         guard textRoles.contains(role) else { return .unknown }
         return BrowserContext(kind: .field,
                               host: nil,
-                              label: fieldLabel(focused, includeTitle: !stableLabelOnly))
+                              label: fieldLabel(focused, includeTitle: !stableLabelOnly),
+                              fieldKey: elementKey(focused))
+    }
+
+    /// 焦点元素的身份。`CFHash` 对 AXUIElement 是按「pid + 元素」算的，
+    /// 同一个控件反复读回来是同一个值，换控件就变。
+    ///
+    /// 不能用位置尺寸代替：输入框会随内容长高，打字时几何就变了，
+    /// 那样「同一个框文案消失」会被误判成「换了框」。
+    private static func elementKey(_ element: AXUIElement) -> String? {
+        let hash = CFHash(element)
+        return hash == 0 ? nil : String(hash)
     }
 
     // MARK: - 取字段

@@ -282,6 +282,57 @@ final class AppFieldRuleTests: XCTestCase {
         XCTAssertEqual(rule.displayKeyword, "搜索")
     }
 
+    /// 读不到文案的框（钉钉聊天框）只能落到整 App 规则上，这也是它唯一能配的形态
+    func testAppWideRuleCoversUnlabelledField() {
+        let rules = [
+            SiteRule(app: dingTalk, keyword: nil, sourceID: pinyin),
+            SiteRule(app: dingTalk, keyword: "搜索", sourceID: abc),
+        ]
+        XCTAssertEqual(SiteRuleMatcher.match(app: dingTalk, label: nil, rules: rules)?.sourceID, pinyin)
+        XCTAssertEqual(SiteRuleMatcher.match(app: dingTalk, label: "", rules: rules)?.sourceID, pinyin)
+    }
+
+    // MARK: - 文案消失 vs 换了输入框
+
+    /// placeholder 有字就消失：还是同一个框，保持现状，别把用户打了一半的字弹回默认源
+    func testKeepsSourceWhenPlaceholderVanishesInSameField() {
+        let context = BrowserContext(kind: .field, label: nil, fieldKey: "42")
+        XCTAssertTrue(InputSourceService.keepsCurrentSource(context: context,
+                                                           suppressMemory: true,
+                                                           lastFieldKey: "42"))
+    }
+
+    /// 换到另一个读不到文案的框（钉钉聊天框）：必须重新判断，「整 App」规则才有机会生效
+    func testSwitchesWhenMovingToAnotherUnlabelledField() {
+        let context = BrowserContext(kind: .field, label: nil, fieldKey: "77")
+        XCTAssertFalse(InputSourceService.keepsCurrentSource(context: context,
+                                                            suppressMemory: true,
+                                                            lastFieldKey: "42"))
+    }
+
+    /// 读不到元素身份时按老办法保守处理：宁可少切一次，也别把用户打的字弹回默认源
+    func testKeepsSourceWhenFieldIdentityIsUnknown() {
+        let context = BrowserContext(kind: .field, label: nil, fieldKey: nil)
+        XCTAssertTrue(InputSourceService.keepsCurrentSource(context: context,
+                                                           suppressMemory: true,
+                                                           lastFieldKey: "42"))
+    }
+
+    /// 有文案就正常走规则，跟身份无关
+    func testLabelledFieldIsNeverSuppressed() {
+        let context = BrowserContext(kind: .field, label: "搜索", fieldKey: "42")
+        XCTAssertFalse(InputSourceService.keepsCurrentSource(context: context,
+                                                            suppressMemory: true,
+                                                            lastFieldKey: "42"))
+    }
+
+    func testSuppressionOnlyAppliesInsideARuleScope() {
+        let context = BrowserContext(kind: .field, label: nil, fieldKey: "42")
+        XCTAssertFalse(InputSourceService.keepsCurrentSource(context: context,
+                                                            suppressMemory: false,
+                                                            lastFieldKey: "42"))
+    }
+
     // MARK: - 辅助
 
     private func makeDirectory() throws -> URL {
