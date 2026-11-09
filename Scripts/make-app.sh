@@ -19,6 +19,9 @@ for arg in "$@"; do
     esac
 done
 BUNDLE_ID="com.selier.baton"
+# 版本号由调用方给，发版时 BATON_VERSION=0.1.1 BATON_BUILD=2 ./Scripts/make-app.sh release
+VERSION="${BATON_VERSION:-0.1.0}"
+BUILD="${BATON_BUILD:-1}"
 APP="$ROOT/dist/Baton.app"
 BIN="$ROOT/.build/$CONFIG/BatonApp"
 OCR_BIN="$ROOT/.build/$CONFIG/BatonOCR"
@@ -56,8 +59,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleDisplayName</key><string>Baton</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+    <key>CFBundleVersion</key><string>${BUILD}</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
