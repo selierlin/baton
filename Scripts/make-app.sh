@@ -2,8 +2,10 @@
 # 把 SwiftPM 产物包成最小 .app。
 # 用法：./Scripts/make-app.sh [debug|release] [--install]
 #   --install：打完再同步到 /Applications/Baton.app（日常运行的那份）
-# 自签：默认 ad-hoc（"-"），每次重编译 cdhash 会变，TCC 授权会重置。
-#       要固定身份，先建一张自签证书，然后 BATON_SIGN_IDENTITY="Baton Dev" ./Scripts/make-app.sh
+# 版本号取自最近的 git tag（v0.1.1 → 0.1.1），build 取提交总数；
+# 两者都能用 BATON_VERSION / BATON_BUILD 覆盖（发版和 CI 用 tag 名）。
+# 签名：优先用本机 Apple Development 证书（DR 绑证书，重建后 TCC 授权不失效），
+#       找不到才退回 ad-hoc（cdhash 会变，每次都要重新授权）。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,9 +21,19 @@ for arg in "$@"; do
     esac
 done
 BUNDLE_ID="com.selier.baton"
-# 版本号由调用方给，发版时 BATON_VERSION=0.1.1 BATON_BUILD=2 ./Scripts/make-app.sh release
-VERSION="${BATON_VERSION:-0.1.0}"
-BUILD="${BATON_BUILD:-1}"
+# 版本号只有一个来源：git tag。发版时打 tag 即生效，本地随手构建也不会再写回默认值。
+# 短版本取最近 tag，build 取提交总数（单调递增，每次构建都不同，界面显示成「0.1.1 (65)」）。
+if [ -n "${BATON_VERSION:-}" ]; then
+    VERSION="$BATON_VERSION"
+else
+    VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
+    [ -n "$VERSION" ] || { echo "错误：仓库里没有 tag，先 git fetch --tags（或用 BATON_VERSION 指定）"; exit 1; }
+fi
+if [ -n "${BATON_BUILD:-}" ]; then
+    BUILD="$BATON_BUILD"
+else
+    BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
+fi
 APP="$ROOT/dist/Baton.app"
 BIN="$ROOT/.build/$CONFIG/BatonApp"
 OCR_BIN="$ROOT/.build/$CONFIG/BatonOCR"
@@ -86,7 +98,7 @@ codesign --force --sign "$IDENTITY" --identifier "$BUNDLE_ID.ocr" "$APP/Contents
 codesign --force --sign "$IDENTITY" --identifier "$BUNDLE_ID" "$APP" >/dev/null
 codesign --verify --verbose=1 "$APP" 2>&1 | tail -1 || true
 
-echo "built $APP (identity=$IDENTITY)"
+echo "built $APP version=$VERSION ($BUILD) identity=$IDENTITY"
 
 # 可选：同步到 /Applications（日常运行的那一份 + 登录项指向它）。
 # 不默认执行——覆盖会动到系统目录，而且 app 正在跑的时候要先退出。

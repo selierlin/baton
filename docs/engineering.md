@@ -100,6 +100,10 @@ swift test                            # 全部单测
 ./Scripts/make-app.sh                 # 打 dist/Baton.app（自动取本机开发证书签名）
 open dist/Baton.app                   # 菜单栏出现图标
 
+# 版本号没有单独的源文件：短版本取最近的 git tag（v0.1.1 → 0.1.1），
+# build 号取提交总数，界面显示成「0.1.1 (65)」。发版打 tag 即生效；
+# 需要临时指定时用 BATON_VERSION / BATON_BUILD 覆盖（CI 的 tag 构建就这么做）。
+
 # 装到 /Applications 并开自启（日常用这一份）
 ditto dist/Baton.app /Applications/Baton.app
 /Applications/Baton.app/Contents/MacOS/Baton --login-enable

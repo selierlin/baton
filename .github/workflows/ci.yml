@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 jobs:
@@ -10,9 +11,14 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 版本号来自 git tag，浅克隆拿不到
       - name: Swift 版本
         run: swift --version
       - name: 单元测试
         run: swift test
       - name: 打包 .app
+        env:
+          # tag 构建用 tag 名（v0.1.1 → 0.1.1），分支构建交给脚本按最近 tag 推导
+          BATON_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
         run: ./Scripts/make-app.sh release
