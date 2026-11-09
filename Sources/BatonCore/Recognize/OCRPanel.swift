@@ -846,10 +846,14 @@ private final class ToastView: NSView {
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.6))
             guard !Task.isCancelled else { return }
-            await NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.2
-                self?.animator().alphaValue = 0
-            }
+            // 不用 `await NSAnimationContext.runAnimationGroup`：新版 SDK 把它标成
+            // nonisolated，MainActor 的闭包传进去会被判成跨隔离域（GitHub Actions 上编不过）。
+            // 隐式动画一样是 0.2s，等它放完再收尾。
+            NSAnimationContext.beginGrouping()
+            NSAnimationContext.current.duration = 0.2
+            self?.animator().alphaValue = 0
+            NSAnimationContext.endGrouping()
+            try? await Task.sleep(for: .seconds(0.2))
         }
     }
 
