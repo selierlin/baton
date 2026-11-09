@@ -209,6 +209,42 @@ case "--prefs":
     }
     app.run()
 
+case "--config-export":
+    // 用法：--config-export <path>。走和设置页同一条导出路径，冒烟时不用点文件面板。
+    guard let path = args.dropFirst().first else {
+        print("用法：--config-export <path>")
+        exit(2)
+    }
+    shell.start()
+    MainActor.assumeIsolated {
+        do {
+            let bundle = try shell.writeConfig(to: URL(fileURLWithPath: path))
+            print("exported sections=\(bundle.sectionNames.joined(separator: ",")) path=\(path)")
+        } catch {
+            print("export failed: \(error.localizedDescription)")
+            exit(1)
+        }
+    }
+    exit(0)
+
+case "--config-import":
+    // 用法：--config-import <path>。跳过确认框，直接应用并打印哪几段生效。
+    guard let path = args.dropFirst().first else {
+        print("用法：--config-import <path>")
+        exit(2)
+    }
+    shell.start()
+    MainActor.assumeIsolated {
+        do {
+            let bundle = try shell.applyConfig(from: URL(fileURLWithPath: path))
+            print("imported sections=\(bundle.sectionNames.joined(separator: ",")) path=\(path)")
+        } catch {
+            print("import failed: \(error.localizedDescription)")
+            exit(1)
+        }
+    }
+    exit(0)
+
 case "--scroll-status":
     MainActor.assumeIsolated {
         let smoother = ScrollSmoother(store: try? SmoothScrollStore())
@@ -565,10 +601,10 @@ case "--ocr-config":
     for provider in settings.providers {
         let mark = provider.id == settings.activeID ? "*" : " "
         var state = ""
-        if provider.kind == .baidu {
-            let ak = provider.apiKeyRef.flatMap { KeychainStore.read(account: $0) } != nil
-            let sk = provider.secretRef.flatMap { KeychainStore.read(account: $0) } != nil
-            state = ak && sk ? "ak/sk=已配置" : "ak/sk=未配置"
+        if provider.kind != .vision {
+            let account = provider.accountID ?? provider.apiKeyRef.flatMap { KeychainStore.read(account: $0) }
+            let key = provider.secretRef.flatMap { KeychainStore.read(account: $0) } != nil
+            state = "account=\(account ?? "-") key=\(key ? "已配置" : "未配置")"
         }
         print("\(mark) \(provider.id)  kind=\(provider.kind.rawValue)  \(state)")
     }
@@ -586,10 +622,13 @@ case "--ocr-preset":
     do {
         let store = try OCRSettingsStore()
         var settings = store.load()
+        var merged = config
         if let index = settings.providers.firstIndex(where: { $0.id == config.id }) {
-            settings.providers[index] = config
+            // 预设里没有账号，覆盖时保留已存的 App ID / SecretId
+            merged.accountID = settings.providers[index].accountID ?? merged.accountID
+            settings.providers[index] = merged
         } else {
-            settings.providers.append(config)
+            settings.providers.append(merged)
         }
         settings.activeID = config.id
         try store.save(settings)
@@ -637,9 +676,16 @@ case "--ocr-key":
         exit(2)
     }
     do {
-        try KeychainStore.save(args[1], account: BaiduOCRCredentials.accessKeyAccount)
         try KeychainStore.save(args[2], account: BaiduOCRCredentials.secretKeyAccount)
-        print("ok 百度 OCR AK/SK 已存入 Keychain")
+        // 账号和设置页一致存配置文件；Keychain 里留一份给升级前的旧配置兜底
+        try KeychainStore.save(args[1], account: BaiduOCRCredentials.accessKeyAccount)
+        let store = try OCRSettingsStore()
+        var settings = store.load()
+        if let index = settings.providers.firstIndex(where: { $0.kind == .baidu }) {
+            settings.providers[index].accountID = args[1]
+            try store.save(settings)
+        }
+        print("ok 百度 OCR App ID 已写入配置，密钥已存入 Keychain")
     } catch {
         print("failed \(error.localizedDescription)")
         exit(1)

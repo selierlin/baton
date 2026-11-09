@@ -24,6 +24,10 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
     public var onChange: (() -> Void)?
     /// 窗口关闭时回调，调用方据此把激活策略退回 accessory。
     public var onClose: (() -> Void)?
+    /// 通用页的「导出配置…」：面板和落盘都由 AppShell 做
+    public var onExportConfig: (() -> Void)?
+    /// 通用页的「导入配置…」
+    public var onImportConfig: (() -> Void)?
 
     private let loginItem: LoginItem
     private weak var inputSource: InputSourceService?
@@ -104,6 +108,12 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// 导入配置后各页控件的值都变了，从外面触发一次重读。
+    public func refresh() { reload() }
+
+    /// 弹确认框时挂在这上面，别让提示框跑到上一个 App 的窗口上去。
+    public var hostWindow: NSWindow? { window }
+
     private func reload() {
         generalPage?.reload(loginEnabled: loginItem.status.enabled)
         scrollPage?.reload(enabled: smoothScroll?.isEnabled ?? false)
@@ -134,6 +144,9 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
         general.onLoginToggle = { [weak self] enabled in
             self?.applyLogin(enabled)
         }
+        // 文件面板与确认框在 AppShell 里弹：窗口层只管「用户点了这个按钮」
+        general.onExportConfig = { [weak self] in self?.onExportConfig?() }
+        general.onImportConfig = { [weak self] in self?.onImportConfig?() }
         generalPage = general
 
         let scroll = ScrollSettingsPage()

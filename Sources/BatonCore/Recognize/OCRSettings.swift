@@ -6,14 +6,19 @@ public struct OCRProviderConfig: Codable, Sendable, Equatable, Identifiable {
         case vision
         /// 百度通用文字识别。
         case baidu
+        /// 腾讯云通用文字识别。
+        case tencent
     }
 
     public var id: String
     public var displayName: String
     public var kind: Kind
-    /// Keychain 里的 AK 名（百度）。
+    /// 账号类凭据的明文值（百度的 App ID / 腾讯的 SecretId）。
+    /// 和翻译侧一致：账号不是秘密，存配置文件、界面上回显；只有密钥进 Keychain。
+    public var accountID: String?
+    /// Keychain 里的 AK 名（百度）/ SecretId 名（腾讯）。新配置用 `accountID`，这里只作旧数据兜底。
     public var apiKeyRef: String?
-    /// Keychain 里的 SK 名（百度）。
+    /// Keychain 里的 SK 名（百度）/ SecretKey 名（腾讯）。
     public var secretRef: String?
     /// 百度 `language_type`，默认中英混合。
     public var languageType: String?
@@ -23,6 +28,7 @@ public struct OCRProviderConfig: Codable, Sendable, Equatable, Identifiable {
     public init(id: String,
                 displayName: String,
                 kind: Kind,
+                accountID: String? = nil,
                 apiKeyRef: String? = nil,
                 secretRef: String? = nil,
                 languageType: String? = nil,
@@ -30,6 +36,7 @@ public struct OCRProviderConfig: Codable, Sendable, Equatable, Identifiable {
         self.id = id
         self.displayName = displayName
         self.kind = kind
+        self.accountID = accountID
         self.apiKeyRef = apiKeyRef
         self.secretRef = secretRef
         self.languageType = languageType
@@ -47,6 +54,44 @@ public struct OCRProviderConfig: Codable, Sendable, Equatable, Identifiable {
                                                 secretRef: BaiduOCRCredentials.secretKeyAccount,
                                                 languageType: "CHN_ENG",
                                                 variant: "general")
+
+    public static let tencent = OCRProviderConfig(id: "tencent",
+                                                  displayName: "腾讯 OCR",
+                                                  kind: .tencent,
+                                                  apiKeyRef: TencentOCRCredentials.secretIDAccount,
+                                                  secretRef: TencentOCRCredentials.secretKeyAccount,
+                                                  languageType: "auto")
+}
+
+extension OCRProviderConfig.Kind {
+    /// 两个凭据在界面上的叫法和 Keychain account。集中放一处，
+    /// 设置页和 transport 才不会各写一套名字对不上。Vision 不需要凭据。
+    public struct Credentials: Sendable, Equatable {
+        public let idLabel: String
+        public let idAccount: String
+        public let secretLabel: String
+        public let secretAccount: String
+    }
+
+    public var credentials: Credentials? {
+        switch self {
+        case .vision:
+            return nil
+        case .baidu:
+            return Credentials(idLabel: "App ID",
+                               idAccount: BaiduOCRCredentials.accessKeyAccount,
+                               secretLabel: "密钥",
+                               secretAccount: BaiduOCRCredentials.secretKeyAccount)
+        case .tencent:
+            return Credentials(idLabel: "SecretId",
+                               idAccount: TencentOCRCredentials.secretIDAccount,
+                               secretLabel: "SecretKey",
+                               secretAccount: TencentOCRCredentials.secretKeyAccount)
+        }
+    }
+
+    /// 只有百度靠接口后缀区分「带不带坐标」，腾讯恒定返回 Polygon。
+    public var hasVariant: Bool { self == .baidu }
 }
 
 public struct OCRSettings: Codable, Sendable, Equatable {

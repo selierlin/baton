@@ -49,7 +49,6 @@ enum SettingsLayout {
     }
 
     /// 一行设置：左边标题（可带一行灰色说明），右边控件贴到最右。
-    /// 标题会变的行（比如翻译的「接口地址 / App ID」）留了 `title` 可以改。
     static func row(_ title: String, detail: String? = nil, control: NSView) -> SettingsRowView {
         SettingsRowView(title: title, detail: detail, control: control)
     }
@@ -74,15 +73,10 @@ enum SettingsLayout {
     }
 }
 
-/// 「标题 + 说明 + 右侧控件」的一行。做成类是为了标题能被调用方改（翻译页的接口地址会变成 App ID）。
+/// 「标题 + 说明 + 右侧控件」的一行。
 @MainActor
 final class SettingsRowView: NSStackView {
     private let nameLabel = NSTextField(labelWithString: "")
-
-    var title: String {
-        get { nameLabel.stringValue }
-        set { nameLabel.stringValue = newValue }
-    }
 
     init(title: String, detail: String?, control: NSView) {
         super.init(frame: .zero)

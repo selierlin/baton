@@ -13,11 +13,36 @@ final class TranslateSettingsTests: XCTestCase {
                        "https://api.deepseek.com/v1/chat/completions")
     }
 
-    func testPresetsAllHaveValidURLs() {
+    func testPresetsAreConfigurable() {
         for preset in ProviderPreset.all {
-            let config = preset.config()
-            XCTAssertNotNil(config, "预设 \(preset.id) 的 baseURL 解析失败")
-            XCTAssertEqual(config?.apiKeyRef, "provider.\(preset.id)")
+            guard let config = preset.config() else {
+                return XCTFail("预设 \(preset.id) 生成配置失败")
+            }
+            XCTAssertEqual(config.apiKeyRef, "provider.\(preset.id)")
+            XCTAssertEqual(config.kind, preset.kind, "预设 \(preset.id) 的 kind 没带进配置")
+            switch preset.kind {
+            case .openAICompatible, .proxy:
+                XCTAssertNotNil(config.baseURL, "预设 \(preset.id) 的 baseURL 解析失败")
+                XCTAssertFalse(config.model.isEmpty, "预设 \(preset.id) 没有默认模型")
+            case .baiduTranslate, .tencentTranslate:
+                // 按账号签名的服务商没有接口地址，模型也不参与请求
+                XCTAssertNil(config.baseURL)
+            }
+        }
+    }
+
+    func testAccountBasedPresetsAreOfferedInSettings() {
+        // 百度传输层早就写完了，但预设里没有条目时下拉框永远选不到它
+        XCTAssertNotNil(ProviderPreset.all.first { $0.id == "baidu" && $0.kind == .baiduTranslate })
+        XCTAssertNotNil(ProviderPreset.all.first { $0.id == "tencent" && $0.kind == .tencentTranslate })
+    }
+
+    func testAccountBasedKindsAskForAccountInsteadOfEndpoint() {
+        for kind in [ProviderConfig.Kind.baiduTranslate, .tencentTranslate] {
+            let targets = kind.fields.map(\.target)
+            XCTAssertTrue(targets.contains(.accountID), "\(kind) 少了账号输入项")
+            XCTAssertTrue(targets.contains(.secret), "\(kind) 少了密钥输入项")
+            XCTAssertFalse(targets.contains(.endpoint), "\(kind) 不该要接口地址")
         }
     }
 

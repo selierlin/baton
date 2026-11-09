@@ -215,4 +215,38 @@ final class OCRSettingsTests: XCTestCase {
         XCTAssertEqual(loaded.active?.kind, .baidu)
         XCTAssertEqual(loaded.active?.variant, "general")
     }
+
+    /// 账号（App ID / SecretId）和翻译侧一致：明文进配置文件，界面上能回显。
+    func testAccountIDPersistsInConfigFile() throws {
+        var config = OCRProviderConfig.baidu
+        config.accountID = "20191112000356260"
+        let settings = OCRSettings(providers: [.vision, config], activeID: "baidu")
+
+        let data = try JSONEncoder().encode(settings)
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("20191112000356260"))
+
+        let decoded = try JSONDecoder().decode(OCRSettings.self, from: data)
+        XCTAssertEqual(decoded.active?.accountID, "20191112000356260")
+    }
+
+    /// 旧配置只有 Keychain 条目名，没有 accountID，解码不能失败。
+    func testLegacyConfigWithoutAccountIDStillDecodes() throws {
+        let json = """
+        {"activeID":"baidu","providers":[
+          {"id":"baidu","displayName":"百度 OCR","kind":"baidu",
+           "apiKeyRef":"ocr.baidu.ak","secretRef":"ocr.baidu.sk","variant":"general"}
+        ]}
+        """
+        let decoded = try JSONDecoder().decode(OCRSettings.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.active?.accountID, nil)
+        XCTAssertEqual(decoded.active?.apiKeyRef, "ocr.baidu.ak")
+    }
+
+    /// 账号来自配置文件、密钥来自刚敲的内容时，工厂不该再去 Keychain 要账号。
+    func testFactoryResolvesAccountFromConfigAndTypedKey() throws {
+        var config = OCRProviderConfig.baidu
+        config.accountID = "appid-from-config"
+        let transport = try OCRTransportFactory.make(config, key: "typed-secret")
+        XCTAssertTrue(transport is BaiduOCRTransport)
+    }
 }

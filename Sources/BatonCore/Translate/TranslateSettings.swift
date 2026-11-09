@@ -1,11 +1,41 @@
 import Foundation
 
+/// 服务商要填的一项。设置页按这个列表渲染行，不再靠「改行标题」适配各家。
+public struct ProviderField: Sendable, Equatable, Hashable {
+    public enum Target: String, Sendable, Hashable {
+        /// → `ProviderConfig.baseURL`
+        case endpoint
+        /// → `ProviderConfig.model`
+        case model
+        /// → `ProviderConfig.appID`。各家叫法不同（App ID / SecretId / 应用 ID），只存值。
+        case accountID
+        /// → Keychain，account = `apiKeyRef`
+        case secret
+    }
+
+    public let target: Target
+    public let label: String
+    public let placeholder: String?
+    public let detail: String?
+
+    public init(target: Target, label: String, placeholder: String? = nil, detail: String? = nil) {
+        self.target = target
+        self.label = label
+        self.placeholder = placeholder
+        self.detail = detail
+    }
+
+    public var isSecret: Bool { target == .secret }
+}
+
 public struct ProviderConfig: Codable, Sendable, Equatable, Identifiable {
     public enum Kind: String, Codable, Sendable {
         /// OpenAI `/chat/completions` 协议。DeepSeek / Kimi / 智谱 / 硅基流动 / Ollama 都是这一族。
         case openAICompatible
         /// 百度翻译开放平台（MD5 签名，不是 Bearer）。
         case baiduTranslate
+        /// 腾讯云机器翻译（TC3-HMAC-SHA256 签名，JSON 请求体）。
+        case tencentTranslate
         /// 自家授权网关。协议按 OpenAI 兼容处理，差别只在语义：
         /// 日后接入订阅制后端时，baseURL 指向自己的服务，key 换成授权 token。
         /// 单列出来是为了 UI 能把「内置」和「我的密钥」分开。
@@ -48,12 +78,63 @@ public struct ProviderConfig: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+extension ProviderConfig.Kind {
+    /// 这个服务商要填什么。加一家新服务商只在这里声明字段，
+    /// 设置页的 `TranslateSettingsPage` 按列表渲染，不用为新服务商写 if。
+    public var fields: [ProviderField] {
+        switch self {
+        case .openAICompatible, .proxy:
+            return [
+                ProviderField(target: .endpoint,
+                              label: "接口地址",
+                              placeholder: "https://api.deepseek.com/v1"),
+                ProviderField(target: .model, label: "模型", placeholder: "deepseek-chat"),
+                ProviderField(target: .secret, label: "API Key", placeholder: "留空则不修改已保存的密钥"),
+            ]
+        case .baiduTranslate:
+            return [
+                ProviderField(target: .accountID,
+                              label: "App ID",
+                              placeholder: "百度翻译开放平台的 appid"),
+                ProviderField(target: .secret,
+                              label: "密钥",
+                              placeholder: "留空则不修改已保存的密钥",
+                              detail: "百度用 appid + 密钥做 MD5 签名，不用 API Key"),
+            ]
+        case .tencentTranslate:
+            return [
+                ProviderField(target: .accountID,
+                              label: "SecretId",
+                              placeholder: "访问管理 → API 密钥"),
+                ProviderField(target: .secret,
+                              label: "SecretKey",
+                              placeholder: "留空则不修改已保存的密钥",
+                              detail: "腾讯云用 SecretId + SecretKey 做 TC3 签名"),
+            ]
+        }
+    }
+}
+
 /// 常见服务商预设：填 key 就能用。
 public struct ProviderPreset: Sendable, Identifiable, Equatable {
     public let id: String
     public let displayName: String
+    public let kind: ProviderConfig.Kind
+    /// OpenAI 兼容族才用得上；按账号签名的服务商（百度、腾讯）留空。
     public let baseURL: String
     public let model: String
+
+    public init(id: String,
+                displayName: String,
+                kind: ProviderConfig.Kind = .openAICompatible,
+                baseURL: String = "",
+                model: String = "") {
+        self.id = id
+        self.displayName = displayName
+        self.kind = kind
+        self.baseURL = baseURL
+        self.model = model
+    }
 
     public static let all: [ProviderPreset] = [
         ProviderPreset(id: "deepseek", displayName: "DeepSeek",
@@ -68,15 +149,30 @@ public struct ProviderPreset: Sendable, Identifiable, Equatable {
                        baseURL: "https://api.siliconflow.cn/v1", model: "Qwen/Qwen2.5-7B-Instruct"),
         ProviderPreset(id: "ollama", displayName: "Ollama（本地）",
                        baseURL: "http://localhost:11434/v1", model: "qwen2.5"),
+        // 按账号签名、没有接口地址和模型的两家，排在最后：多数人用不到
+        ProviderPreset(id: "baidu", displayName: "百度翻译",
+                       kind: .baiduTranslate),
+        ProviderPreset(id: "tencent", displayName: "腾讯翻译",
+                       kind: .tencentTranslate),
     ]
 
     public func config(apiKeyRef: String? = nil) -> ProviderConfig? {
-        guard let url = URL(string: baseURL) else { return nil }
-        return ProviderConfig(id: id,
-                              displayName: displayName,
-                              baseURL: url,
-                              model: model,
-                              apiKeyRef: apiKeyRef ?? "provider.\(id)")
+        let ref = apiKeyRef ?? "provider.\(id)"
+        switch kind {
+        case .openAICompatible, .proxy:
+            guard let url = URL(string: baseURL) else { return nil }
+            return ProviderConfig(id: id,
+                                  displayName: displayName,
+                                  kind: kind,
+                                  baseURL: url,
+                                  model: model,
+                                  apiKeyRef: ref)
+        case .baiduTranslate, .tencentTranslate:
+            return ProviderConfig(id: id,
+                                  displayName: displayName,
+                                  kind: kind,
+                                  apiKeyRef: ref)
+        }
     }
 }
 

@@ -1,7 +1,5 @@
 import CoreGraphics
 import Foundation
-import ImageIO
-import UniformTypeIdentifiers
 
 /// 百度通用文字识别。
 ///
@@ -51,27 +49,6 @@ public struct BaiduOCRTransport: OCRTransport {
         self.languageType = languageType
         self.cacheURL = cacheURL ?? Self.defaultCacheURL()
         self.session = session
-    }
-
-    /// 从 Keychain 取 AK/SK。account 约定见 `BaiduOCRCredentials`。
-    public init(apiKeyRef: String,
-                secretRef: String,
-                variant: Variant = .general,
-                languageType: String = "CHN_ENG",
-                cacheURL: URL? = nil,
-                session: URLSession = .shared) throws {
-        guard let ak = KeychainStore.read(account: apiKeyRef), !ak.isEmpty else {
-            throw OCRError.missingCredential(account: apiKeyRef)
-        }
-        guard let sk = KeychainStore.read(account: secretRef), !sk.isEmpty else {
-            throw OCRError.missingCredential(account: secretRef)
-        }
-        self.init(accessKey: ak,
-                  secretKey: sk,
-                  variant: variant,
-                  languageType: languageType,
-                  cacheURL: cacheURL,
-                  session: session)
     }
 
     public func recognize(_ request: OCRRequest) async throws -> OCRResult {
@@ -235,60 +212,9 @@ public struct BaiduOCRTransport: OCRTransport {
 
     // MARK: - 图片预处理
 
-    /// 百度按 base64 后的长度限 4MB。先降 JPEG 质量，不够再等比缩小。
+    /// 百度按 base64 后的长度限 4MB。压缩逻辑在 `OCREncoding`，腾讯那边共用。
     static func encodeForUpload(_ image: CGImage) throws -> Data {
-        guard image.width > 0, image.height > 0 else { throw OCRError.emptyImage }
-
-        func fits(_ data: Data) -> Bool {
-            // base64 约为原始 4/3，这里直接按最终字符串长度比。
-            data.base64EncodedString().utf8.count <= uploadLimit
-        }
-
-        for quality in [0.9, 0.75, 0.6] {
-            if let data = jpeg(image, quality: quality), fits(data) { return data }
-        }
-
-        var current = image
-        for _ in 0..<6 {
-            guard let smaller = resized(current, factor: 0.7) else { break }
-            current = smaller
-            for quality in [0.85, 0.65] {
-                if let data = jpeg(current, quality: quality), fits(data) { return data }
-            }
-            if current.width <= 320 || current.height <= 320 { break }
-        }
-        throw OCRError.requestFailed("图片压缩后仍超过 4MB 限制")
-    }
-
-    static func jpeg(_ image: CGImage, quality: Double) -> Data? {
-        let buffer = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(buffer,
-                                                                 UTType.jpeg.identifier as CFString,
-                                                                 1, nil) else {
-            return nil
-        }
-        CGImageDestinationAddImage(destination, image, [
-            kCGImageDestinationLossyCompressionQuality: quality,
-        ] as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-        return buffer as Data
-    }
-
-    static func resized(_ image: CGImage, factor: Double) -> CGImage? {
-        let width = max(1, Int(Double(image.width) * factor))
-        let height = max(1, Int(Double(image.height) * factor))
-        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(data: nil,
-                                      width: width,
-                                      height: height,
-                                      bitsPerComponent: 8,
-                                      bytesPerRow: 0,
-                                      space: space,
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { return nil }
-        context.interpolationQuality = .high
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return context.makeImage()
+        try OCREncoding.encode(image, base64Limit: uploadLimit)
     }
 
     static func explain(_ code: Int) -> String {
