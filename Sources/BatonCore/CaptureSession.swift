@@ -148,6 +148,7 @@ public final class CaptureSession {
             }
         }
 
+        let capturedAt = Date()
         do {
             frames = try await ScreenCapturer.captureAll()
         } catch CaptureFailure.screenRecordingDenied {
@@ -155,6 +156,14 @@ public final class CaptureSession {
         } catch {
             return .failed(String(describing: error))
         }
+        // 诊断用：人为把抓帧拖慢，验证「热键按下就开拖」的接管路径
+        if let delay = ProcessInfo.processInfo.environment["BATON_SLOW_CAPTURE_MS"].flatMap(Int.init),
+           delay > 0 {
+            try? await Task.sleep(for: .milliseconds(delay))
+        }
+        // 抓帧耗时 = 「按了热键，屏幕上却什么都没变」的那段空白，多屏时尤其明显
+        ActionLog.action("capture.frames",
+                         "ms=\(Int(Date().timeIntervalSince(capturedAt) * 1000)) displays=\(frames.count)")
 
         // 长截图：框选阶段还需要冻结帧当画面，框完立刻切到实时采集
         if case .scroll(let direction) = action {

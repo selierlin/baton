@@ -41,6 +41,9 @@ public final class OverlayController {
     private let mainScreenHeight: CGFloat
     /// 框选结束后把覆盖层留在屏幕上，供原地编辑/长截图接管。
     private var retainsSelection = false
+    /// 接管「铺开之前就已经按下」的那次拖拽：轮询 + 记着是哪个视图
+    private var adoptTimer: Timer?
+    private weak var adoptView: OverlayView?
 
     public init() {
         mainScreenHeight = NSScreen.screens.first?.frame.height ?? 0
@@ -90,6 +93,20 @@ public final class OverlayController {
             windows.first?.makeKey()
             NSApp.activate(ignoringOtherApps: true)
             windows.first?.makeKey()
+            // 多屏排查：每块屏一层窗，位置和层级都要对得上，否则「看得见却选不中」
+            for window in windows {
+                let f = window.frame
+                ActionLog.action("overlay.window",
+                                 "num=\(window.windowNumber) frame=\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))x\(Int(f.height)) level=\(window.level.rawValue) ignores=\(window.ignoresMouseEvents)")
+            }
+            ActionLog.action("overlay.key",
+                             "num=\(windows.first?.windowNumber ?? -1) active=\(NSApp.isActive)")
+
+            // 抓帧那 100–300ms 里用户可能已经开始拖了，那一下的 mouseDown 落在别的 App 上，
+            // 后续 dragged/up 也不会回到我们这里，不接住的话就是「框了等于没框」
+            if initialSelection == nil {
+                adoptOngoingDragIfNeeded()
+            }
 
             // 固定选区（上次区域 / 联调探针）：直接锁住并交出舞台
             if let initialSelection {
@@ -162,7 +179,53 @@ public final class OverlayController {
         views[displayID]?.localFrame(forGlobal: rect)
     }
 
+    // MARK: - 接管铺开前就按下的拖拽
+
+    /// 覆盖层铺开时左键已经按下：把这次进行中的拖拽接过来。
+    ///
+    /// 抓帧要 100–300ms（多屏串行时 215ms），用户经常按完热键手就动了。那一下的
+    /// mouseDown 落在原来的前台 App 上，AppKit 后续的 dragged/up 也只发给它，
+    /// 覆盖层全程收不到鼠标事件 —— 屏幕上就是「框选没反应，提示条还在，得再框一次」。
+    private func adoptOngoingDragIfNeeded() {
+        guard NSEvent.pressedMouseButtons & 0x1 != 0,
+              let cgPoint = CGEvent(source: nil)?.location else { return }
+        let cocoa = CGPoint(x: cgPoint.x, y: mainScreenHeight - cgPoint.y)
+        guard let view = views.values.first(where: { $0.window?.frame.contains(cocoa) == true }) else {
+            return
+        }
+
+        adoptView = view
+        view.beginAdoptedSelection(at: cgPoint)
+        ActionLog.action("overlay.adopt",
+                         "win=\(view.window?.windowNumber ?? -1) at=\(Int(cgPoint.x)),\(Int(cgPoint.y))")
+
+        // 用轮询而不是全局监听：这次拖拽的 mouseDown 属于别的 App，AppKit 不会把后续
+        // dragged/up 送到我们这里，NSEvent 的全局监听在这种「事件已被别的 App 接管」
+        // 的场合并不可靠。轮询只在这段接管期间跑，一秒左右，代价可以忽略。
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let view = self.adoptView else { return }
+                let point = CGEvent(source: nil)?.location ?? .zero
+                if NSEvent.pressedMouseButtons & 0x1 != 0 {
+                    view.updateAdoptedSelection(at: point)
+                } else {
+                    self.stopAdoptingDrag()
+                    view.endAdoptedSelection(at: point)
+                }
+            }
+        }
+        adoptTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func stopAdoptingDrag() {
+        adoptTimer?.invalidate()
+        adoptTimer = nil
+        adoptView = nil
+    }
+
     private func finish(_ selection: CaptureSelection?) {
+        stopAdoptingDrag()
         timeoutTask?.cancel()
         timeoutTask = nil
         let continuation = self.continuation
@@ -250,6 +313,7 @@ public final class OverlayController {
     }
 
     private func teardown() {
+        stopAdoptingDrag()
         for window in windows {
             window.orderOut(nil)
             window.contentView = nil
@@ -793,7 +857,13 @@ final class OverlayView: NSView {
 
     // MARK: - 事件
 
+    /// 覆盖层是「点一下就该生效」的画布：App 刚被热键拉到前台时，第一次点击
+    /// 默认会被系统吞掉（拿去做激活），表现就是「第一下拖拽没反应」。
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override func mouseDown(with event: NSEvent) {
+        ActionLog.action("overlay.down",
+                         "win=\(window?.windowNumber ?? -1) display=\(captured.display.displayID) mode=\(String(describing: mode)) locked=\(lockedSelection != nil)")
         // 编辑态：选区已锁定，画布自己收事件，遮罩上的点击不重开框选
         if lockedSelection != nil {
             // 框外按下 = 把那条边挪到指针上。Longshot 是点一下就扩（不必按住拖），
@@ -855,6 +925,8 @@ final class OverlayView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        ActionLog.action("overlay.up",
+                         "win=\(window?.windowNumber ?? -1) anchor=\(anchor != nil) locked=\(lockedSelection != nil) outside=\(outsideDrag != nil)")
         // 框外拖边收尾：选区已经跟着改过了，这一下不算「空选区取消」
         if outsideDrag != nil {
             outsideDrag = nil
@@ -865,11 +937,14 @@ final class OverlayView: NSView {
         // 把 mouseUp 顺着响应链冒泡上来的。此处若继续走「空选区 = 取消」，
         // 用户点一下颜色整个截图就没了 —— 必须和 mouseDown 一样先挡住。
         if lockedSelection != nil { return }
+        finishDrag(at: globalPoint(for: event))
+    }
 
+    /// 收尾一次框选：鼠标抬起、以及「铺开前就按下」被接管的拖拽，都走这里。
+    private func finishDrag(at released: CGPoint) {
         // 单击（没拖）命中窗口/元素：直接选中它，和 Longshot 的「开始截图」一致
         let pressed = pressedHover
         pressedHover = nil
-        let released = globalPoint(for: event)
         if let pressed, let anchor,
            hypot(released.x - anchor.x, released.y - anchor.y) <= Self.dragThreshold {
             ActionLog.action("overlay.pickClick",
@@ -879,7 +954,7 @@ final class OverlayView: NSView {
         }
 
         hideMagnifier()
-        current = globalPoint(for: event)
+        current = released
         defer { anchor = nil; current = nil; updateSelectionLayers() }
 
         guard let rect = selectionGlobal, rect.width >= 2, rect.height >= 2 else {
@@ -894,6 +969,29 @@ final class OverlayView: NSView {
             window?.invalidateCursorRects(for: self)
         }
         onFinish?(CaptureSelection(globalRect: rect, display: captured.display))
+    }
+
+    // MARK: - 接管铺开前就按下的拖拽
+
+    /// 覆盖层铺开时左键已经按下：从当前位置起手，跟着这次拖拽走。
+    func beginAdoptedSelection(at global: CGPoint) {
+        guard mode == .area, lockedSelection == nil else { return }
+        anchor = global
+        current = global
+        pressedHover = nil
+        updateSelectionLayers()
+    }
+
+    func updateAdoptedSelection(at global: CGPoint) {
+        guard mode == .area, lockedSelection == nil, anchor != nil else { return }
+        current = global
+        updateSelectionLayers()
+    }
+
+    func endAdoptedSelection(at global: CGPoint) {
+        guard mode == .area, lockedSelection == nil, anchor != nil else { return }
+        current = global
+        finishDrag(at: global)
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -959,6 +1057,7 @@ final class OverlayView: NSView {
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
         case 53:  // Esc
+            ActionLog.action("overlay.esc", "win=\(window?.windowNumber ?? -1)")
             onFinish?(nil)
         case 48:  // ⇥ 切换窗口 / 窗口区域
             togglePickKind()

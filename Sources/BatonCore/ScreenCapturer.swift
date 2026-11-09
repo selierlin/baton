@@ -144,36 +144,61 @@ public enum ScreenCapturer {
         let selfApp = content.applications.first {
             $0.processID == ProcessInfo.processInfo.processIdentifier
         }
+        // 串行抓两块屏时，第二块要等第一块抓完：实测按热键到覆盖层铺开 215ms，
+        // 单屏只要 11ms。用户按下就拖，前 200ms 的拖拽全落在别的 App 上，
+        // 覆盖层铺开后看起来「框了没反应」，只好再框一次。改成并发抓。
+        let jobs = content.displays.map { DisplayJob(display: $0, selfApp: selfApp) }
         var frames: [CapturedFrame] = []
-        for display in content.displays {
-            // 必须按单块 display 构造 filter，SCK 不支持多屏并集
-            let filter = SCContentFilter(display: display,
-                                         excludingApplications: selfApp.map { [$0] } ?? [],
-                                         exceptingWindows: [])
-
-            // SCDisplay.width/height 的单位是「点」，不是像素
-            let scale = CGFloat(filter.pointPixelScale)
-
-            let config = SCStreamConfiguration()
-            config.width = max(1, Int(CGFloat(display.width) * scale))
-            config.height = max(1, Int(CGFloat(display.height) * scale))
-            config.showsCursor = false
-            config.scalesToFit = false
-            config.captureResolution = .best
-
-            do {
-                let image = try await SCScreenshotManager.captureImage(contentFilter: filter,
-                                                                      configuration: config)
-                let frame = DisplayFrame(displayID: display.displayID,
-                                         screenFrame: display.frame,
-                                         pixelSize: CGSize(width: image.width, height: image.height),
-                                         nativeScale: scale)
-                frames.append(CapturedFrame(image: image, display: frame))
-            } catch {
-                throw CaptureFailure.captureFailed(error.localizedDescription)
+        try await withThrowingTaskGroup(of: CapturedFrame.self) { group in
+            for job in jobs {
+                group.addTask { try await job.capture() }
+            }
+            for try await frame in group {
+                frames.append(frame)
             }
         }
+        // 任务组回来的顺序不固定，按屏幕位置排好，下游 `frames[0]` 的兜底才稳定
+        frames.sort {
+            ($0.display.screenFrame.minX, $0.display.screenFrame.minY)
+                < ($1.display.screenFrame.minX, $1.display.screenFrame.minY)
+        }
         return frames
+    }
+}
+
+/// 单块屏的抓帧任务。`SCDisplay` / `SCRunningApplication` 没标 Sendable，
+/// 但这两个对象在 `SCShareableContent` 生命周期内只读，跨任务传引用是安全的。
+private struct DisplayJob: @unchecked Sendable {
+    let display: SCDisplay
+    let selfApp: SCRunningApplication?
+
+    func capture() async throws -> CapturedFrame {
+        // 必须按单块 display 构造 filter，SCK 不支持多屏并集
+        let filter = SCContentFilter(display: display,
+                                     excludingApplications: selfApp.map { [$0] } ?? [],
+                                     exceptingWindows: [])
+
+        // SCDisplay.width/height 的单位是「点」，不是像素
+        let scale = CGFloat(filter.pointPixelScale)
+
+        let config = SCStreamConfiguration()
+        config.width = max(1, Int(CGFloat(display.width) * scale))
+        config.height = max(1, Int(CGFloat(display.height) * scale))
+        config.showsCursor = false
+        config.scalesToFit = false
+        config.captureResolution = .best
+
+        do {
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter,
+                                                                  configuration: config)
+            let frame = DisplayFrame(displayID: display.displayID,
+                                     screenFrame: display.frame,
+                                     pixelSize: CGSize(width: image.width, height: image.height),
+                                     nativeScale: scale)
+            return CapturedFrame(image: image, display: frame)
+        } catch {
+            throw CaptureFailure.captureFailed(error.localizedDescription)
+        }
     }
 }
 
