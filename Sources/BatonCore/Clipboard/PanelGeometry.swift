@@ -18,4 +18,31 @@ public enum PanelGeometry {
         guard right >= left else { return left }
         return min(max(current, left), right)
     }
+
+    /// 呼出落点：保存过、且窗口中心还在这块屏上，就沿用；否则落在屏幕上沿居中。
+    ///
+    /// 判据用「中心是否在这块屏」而不是严格包含：用户可能故意把面板放到贴边，
+    /// 收得太紧会导致每次呼出都被抢回默认位。双屏下保存位置属于另一块屏时，
+    /// 落到当前屏的默认位，而不是把人拉回原来那块。
+    public static func launchOrigin(saved: CGPoint?,
+                                    size: CGSize,
+                                    screen: CGRect,
+                                    topInset: CGFloat = 80) -> CGPoint {
+        if let saved,
+           screen.contains(CGPoint(x: saved.x + size.width / 2, y: saved.y + size.height / 2)) {
+            return clampedOrigin(saved, size: size, screen: screen)
+        }
+        return clampedOrigin(CGPoint(x: screen.midX - size.width / 2,
+                                     y: screen.maxY - topInset - size.height),
+                             size: size,
+                             screen: screen)
+    }
+
+    /// 整个窗口收进可用区域：水平沿用 `originX` 的规则，垂直留出阴影边距。
+    public static func clampedOrigin(_ point: CGPoint,
+                                     size: CGSize,
+                                     screen: CGRect) -> CGPoint {
+        CGPoint(x: originX(current: point.x, width: size.width, screen: screen),
+                y: min(max(point.y, screen.minY + margin), screen.maxY - margin - size.height))
+    }
 }

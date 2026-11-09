@@ -45,4 +45,53 @@ final class PanelGeometryTests: XCTestCase {
         XCTAssertEqual(PanelGeometry.originX(current: 1200, width: 580, screen: screen),
                        1440 - PanelGeometry.margin - 580)
     }
+
+    // MARK: - 呼出落点
+
+    private let size = CGSize(width: 580, height: 640)
+
+    /// 没有保存位置：这块屏上沿居中，距顶 80。
+    func testFirstRunCentersOnScreenTop() {
+        let origin = PanelGeometry.launchOrigin(saved: nil, size: size, screen: screen)
+        XCTAssertEqual(origin.x, 1440 / 2 - 290)
+        XCTAssertEqual(origin.y, 875 - 80 - 640)
+    }
+
+    /// 保存位置就在这块屏：沿用，不再回默认位。
+    func testSavedOriginOnSameScreenIsReused() {
+        let saved = CGPoint(x: 120, y: 200)
+        XCTAssertEqual(PanelGeometry.launchOrigin(saved: saved, size: size, screen: screen), saved)
+    }
+
+    /// 保存位置属于另一块屏：落到当前屏默认位，而不是把人拉回去。
+    func testSavedOriginOnOtherScreenFallsBackToCurrentScreen() {
+        let saved = CGPoint(x: 1600, y: 200)
+        let origin = PanelGeometry.launchOrigin(saved: saved, size: size, screen: screen)
+        XCTAssertEqual(origin.x, 1440 / 2 - 290)
+        XCTAssertEqual(origin.y, 875 - 80 - 640)
+    }
+
+    /// 副屏在主屏左侧（负坐标）：默认位要跟着那块屏走，不能算到主屏上。
+    func testLeftSideScreenUsesItsOwnCoordinates() {
+        let left = CGRect(x: -1440, y: 0, width: 1440, height: 875)
+        let origin = PanelGeometry.launchOrigin(saved: nil, size: size, screen: left)
+        XCTAssertEqual(origin.x, -1440 + 720 - 290)
+        XCTAssertEqual(origin.y, 155)
+    }
+
+    /// 保存位置贴边但中心还在屏内：收回边距，不要顶出屏幕。
+    func testSavedOriginNearEdgeIsClamped() {
+        let saved = CGPoint(x: -100, y: 100)
+        let origin = PanelGeometry.launchOrigin(saved: saved, size: size, screen: screen)
+        XCTAssertEqual(origin.x, PanelGeometry.margin)
+        XCTAssertEqual(origin.y, 100)
+    }
+
+    /// 副屏比主屏矮：默认位仍要整窗可见。
+    func testShorterScreenKeepsPanelInside() {
+        let short = CGRect(x: 0, y: 0, width: 1280, height: 700)
+        let origin = PanelGeometry.launchOrigin(saved: nil, size: size, screen: short)
+        XCTAssertGreaterThanOrEqual(origin.y, short.minY + PanelGeometry.margin)
+        XCTAssertLessThanOrEqual(origin.y + size.height, short.maxY - PanelGeometry.margin)
+    }
 }

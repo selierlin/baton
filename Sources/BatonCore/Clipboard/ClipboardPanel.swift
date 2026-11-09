@@ -286,42 +286,26 @@ public final class ClipboardPanelController: NSObject {
     }
 
     private func positionPanel() {
-        let defaults = UserDefaults.standard
-        if defaults.object(forKey: Self.frameKey) != nil {
-            let point = NSPointFromString(defaults.string(forKey: Self.frameKey) ?? "")
-            if point != .zero, isOnAnyScreen(point) {
-                panel.setFrameOrigin(clamped(point))
-                return
-            }
+        guard let screen = targetScreen()?.visibleFrame else { return }
+        var saved: CGPoint?
+        // 早先版本可能存过 {0, 0}（那时是「没位置」的占位），别把它当成真位置
+        if let raw = UserDefaults.standard.string(forKey: Self.frameKey) {
+            let point = NSPointFromString(raw)
+            saved = point == .zero ? nil : point
         }
+        panel.setFrameOrigin(PanelGeometry.launchOrigin(saved: saved,
+                                                         size: panel.frame.size,
+                                                         screen: screen))
+    }
+
+    /// 呼出在哪块屏：指针所在的那块。
+    ///
+    /// 不用 `NSScreen.main` —— 它指「含菜单栏或 key window 的屏」，双屏下经常不是
+    /// 用户正在看的那块；也不用前台 App 的焦点窗口，Baton 是常驻 App，触发时
+    /// 前台可能刚被系统换成别的进程，会把面板扔到没人在看的屏上。
+    private func targetScreen() -> NSScreen? {
         let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
-        guard let visible = screen?.visibleFrame else { return }
-        panel.setFrameOrigin(clamped(NSPoint(
-            x: visible.midX - Self.listWidth / 2,
-            y: visible.maxY - Self.panelHeight - 80
-        )))
-    }
-
-    /// 记住的位置可能来自别的屏幕或改过分辨率，落位时按当前屏幕收一次，
-    /// 保证整个窗口都在可见区域内（阴影也不会贴边被裁）。
-    private func clamped(_ point: NSPoint) -> NSPoint {
-        let center = NSPoint(x: point.x + Self.listWidth / 2, y: point.y + Self.panelHeight / 2)
-        let screen = NSScreen.screens.first { $0.visibleFrame.contains(center) } ?? NSScreen.main
-        guard let visible = screen?.visibleFrame else { return point }
-        let margin = PanelGeometry.margin
-        return NSPoint(
-            x: PanelGeometry.originX(current: point.x, width: Self.listWidth, screen: visible),
-            y: min(max(point.y, visible.minY + margin), visible.maxY - margin - Self.panelHeight)
-        )
-    }
-
-    private func isOnAnyScreen(_ point: NSPoint) -> Bool {
-        NSScreen.screens.contains { screen in
-            let frame = screen.visibleFrame
-            return point.x >= frame.minX - 40 && point.x <= frame.maxX - 120
-                && point.y >= frame.minY - 40 && point.y <= frame.maxY - 120
-        }
+        return NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
     }
 
     private func saveOrigin() {
