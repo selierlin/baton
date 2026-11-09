@@ -29,7 +29,10 @@ public enum CaptureFailure: Error, Sendable {
 /// `SCShareableContent` 并重建 filter，实测单帧多花 26ms（8 次平均 68ms → 42ms，
 /// 最坏 149ms）。抓帧慢一拍，手一快两帧就没重叠了，中间那段谁也补不回来。
 /// 这里把 filter / config 建一次，循环里只发截图请求。
-public final class RegionCaptureSession {
+/// `@unchecked Sendable`：filter / config 在 init 里建好之后只读，同一时刻只有一个调用方
+/// 持有它（长截图循环里逐帧 await），没有并发访问。不标的话新版 toolchain 不允许
+/// 把这个类型的实例从非隔离的 async init 送回调用方。
+public final class RegionCaptureSession: @unchecked Sendable {
     private let filter: SCContentFilter
     private let config: SCStreamConfiguration
 
