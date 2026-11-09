@@ -33,7 +33,7 @@ public final class ActivationPolicyController {
         app.setActivationPolicy(.accessory)
     }
 
-    public func withRegular<T>(_ body: () async -> T) async -> T {
+    public func withRegular<T>(_ body: @MainActor () async -> T) async -> T {
         enterRegular()
         defer { leaveRegular() }
         return await body()

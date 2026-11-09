@@ -776,7 +776,9 @@ public enum AnnotateRenderer {
         }
     }
 
-    private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+    /// CIContext 本身可以多线程共用（Apple 文档明确写了），但类型没标 Sendable，
+    /// 新版 toolchain 会把 static 存这种值判成并发不安全，这里显式声明一下。
+    private nonisolated(unsafe) static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
 
     private static func drawBlurredRegion(_ context: CGContext, rect: CGRect,
                                           radius: CGFloat, source: CGImage) {
