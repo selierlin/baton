@@ -861,7 +861,15 @@ final class OverlayView: NSView {
     /// 默认会被系统吞掉（拿去做激活），表现就是「第一下拖拽没反应」。
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    /// 多屏时一屏一层窗，键盘只送给 key window。指针挪到哪块屏，就把 key 交给它，
+    /// 否则方向键 / ⇧⌘ 扩缩会作用在另一块屏上（看起来就是「按了没反应」）。
+    private func adoptKeyIfNeeded() {
+        guard let window, !window.isKeyWindow else { return }
+        window.makeKey()
+    }
+
     override func mouseDown(with event: NSEvent) {
+        adoptKeyIfNeeded()
         ActionLog.action("overlay.down",
                          "win=\(window?.windowNumber ?? -1) display=\(captured.display.displayID) mode=\(String(describing: mode)) locked=\(lockedSelection != nil)")
         // 编辑态：选区已锁定，画布自己收事件，遮罩上的点击不重开框选
@@ -976,6 +984,7 @@ final class OverlayView: NSView {
     /// 覆盖层铺开时左键已经按下：从当前位置起手，跟着这次拖拽走。
     func beginAdoptedSelection(at global: CGPoint) {
         guard mode == .area, lockedSelection == nil else { return }
+        adoptKeyIfNeeded()
         anchor = global
         current = global
         pressedHover = nil
@@ -996,6 +1005,7 @@ final class OverlayView: NSView {
 
     override func mouseMoved(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        adoptKeyIfNeeded()
         if mode == .area {
             // 编辑态：光标不跟着 AppKit 的增量更新走，按当前位置自己算
             if lockedSelection != nil { syncLockedCursor() }
