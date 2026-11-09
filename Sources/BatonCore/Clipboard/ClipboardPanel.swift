@@ -23,7 +23,7 @@ public final class ClipboardPanelController: NSObject {
         target: nil,
         action: nil
     )
-    private let tableView = NSTableView()
+    private let tableView = ClipboardTableView()
     private let emptyLabel = NSTextField(labelWithString: "")
     private let preview = ClipPreviewView()
     private let previewColumn = NSView()
@@ -142,6 +142,11 @@ public final class ClipboardPanelController: NSObject {
         tableView.delegate = self
         tableView.target = self
         tableView.doubleAction = #selector(copyOnly)
+        // 键盘动作平时靠搜索框的 doCommandBy 传下来；用鼠标点过列表之后焦点在表格上，
+        // 那条路就断了（回车不粘、Esc 不关、⌫ 不删、Tab 不预览），这里接回同一条
+        tableView.onCommand = { [weak self] selector in
+            self?.handle(command: selector) ?? false
+        }
 
         let scroll = NSScrollView()
         scroll.documentView = tableView
@@ -547,6 +552,39 @@ extension ClipboardPanelController: NSTableViewDataSource, NSTableViewDelegate {
         guard let index = selectedIndex else { return }
         tableView.scrollRowToVisible(index)
         preview.show(items[index].item, store: store)
+    }
+}
+
+// MARK: - 列表
+
+/// 列表自己的键盘处理。
+///
+/// 面板里所有动作都写在 `handle(command:)`，但入口只有搜索框的 `doCommandBy`。
+/// 鼠标点一下行，第一响应者就变成表格，回车/ Esc / Tab / ⌫ 再也没人接 ——
+/// 多选连粘这条路上，用户正是先点选再按回车，所以一定会踩到。
+/// 上下键仍交给 NSTableView 自己处理（原生扩选、滚动都正常）。
+final class ClipboardTableView: NSTableView {
+    var onCommand: ((Selector) -> Bool)?
+
+    private static let commands: [UInt16: Selector] = [
+        36: #selector(NSResponder.insertNewline(_:)),   // Return
+        76: #selector(NSResponder.insertNewline(_:)),   // 小键盘 Enter
+        48: #selector(NSResponder.insertTab(_:)),
+        51: #selector(NSResponder.deleteBackward(_:)),
+        117: #selector(NSResponder.deleteForward(_:)),
+        53: #selector(NSResponder.cancelOperation(_:)),
+        123: #selector(NSResponder.moveLeft(_:)),
+        124: #selector(NSResponder.moveRight(_:)),
+    ]
+
+    override func keyDown(with event: NSEvent) {
+        // 带 ⌘ 的组合留给系统（⌘A 全选、⌘C 等），别抢
+        if !event.modifierFlags.contains(.command),
+           let command = Self.commands[event.keyCode],
+           onCommand?(command) == true {
+            return
+        }
+        super.keyDown(with: event)
     }
 }
 
