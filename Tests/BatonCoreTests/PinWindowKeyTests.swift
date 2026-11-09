@@ -9,13 +9,14 @@ import XCTest
 /// 「画布有没有插进 contentView」这类只有把窗口立起来才暴露的接线错误。
 @MainActor
 final class PinWindowKeyTests: XCTestCase {
-    private var controller: PinWindowController!
-    private var closed = false
-    private var databaseDirectory: URL?
+    // 这几个只是用例自己的账本，不参与 UI 隔离；tearDown 在 Xcode 16 的 XCTest 里是
+    // 非隔离的，标成 nonisolated 才能在收尾里读它们（真正需要主线程的窗口关闭放到用例开头）。
+    nonisolated(unsafe) private var controller: PinWindowController!
+    nonisolated(unsafe) private var closed = false
+    nonisolated(unsafe) private var databaseDirectory: URL?
 
     override func tearDownWithError() throws {
-        controller?.close()
-        controller = nil
+        // 窗口由下一个用例的 makeController 负责关（见那里），这里只清临时库
         if let databaseDirectory { try? FileManager.default.removeItem(at: databaseDirectory) }
     }
 
@@ -40,6 +41,8 @@ final class PinWindowKeyTests: XCTestCase {
     }
 
     private func makeController(image: CGImage, store: PinStore? = nil) -> PinWindowController {
+        // 上一个用例留下的窗口：在这儿关掉既在主线程上，也省一次 tearDown 的隔离问题
+        controller?.close()
         closed = false
         let controller = PinWindowController(source: PinImageSource(image: image),
                                              scale: 1,

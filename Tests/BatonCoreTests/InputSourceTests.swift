@@ -575,7 +575,8 @@ final class InputSourceStoreTests: XCTestCase {
 /// 服务层的边界：延迟值要收敛，清记忆要真的落盘。
 @MainActor
 final class InputSourceServiceTests: XCTestCase {
-    private var directory: URL!
+    // setUp / tearDown 在 Xcode 16 的 XCTest 里是非隔离的，这个路径不参与 UI 隔离
+    nonisolated(unsafe) private var directory: URL!
 
     override func setUpWithError() throws {
         directory = FileManager.default.temporaryDirectory
