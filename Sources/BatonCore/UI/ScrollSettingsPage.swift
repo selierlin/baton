@@ -1,13 +1,13 @@
 import AppKit
 
-/// 滚动页：平滑滚动开关、每行距离、尾巴时长、强制平滑、现场诊断。
+/// 滚动页：平滑滚动开关、每格距离、平滑度、强制平滑、现场诊断。
 ///
 /// 原来这组控件挂在「通用」里，和登录项、截图、录制挤在一列，找一项要从头扫到尾。
 /// 每个功能模块一页之后，进这一页看的就只是滚动。
 @MainActor
 final class ScrollSettingsPage: NSView {
     var onToggle: ((Bool) -> Void)?
-    /// 拖动滑杆时回写「每行多少点 / 平滑时长」
+    /// 拖动滑杆时回写「一格多少点 / 平滑度」
     var onTuning: ((Double, Double) -> Void)?
     /// 「我的鼠标没被识别」兜底开关
     var onForceMouseChange: ((Bool) -> Void)?
@@ -40,7 +40,7 @@ final class ScrollSettingsPage: NSView {
         smoothSwitch.target = self
         smoothSwitch.action = #selector(smoothChanged)
 
-        // 两颗滑杆：距离决定一格滚多远，时长决定尾巴多长
+        // 两颗滑杆：距离决定一格滚多远，平滑度决定尾巴多长（越大越飘）
         for slider in [distanceSlider, durationSlider] {
             slider.controlSize = .small
             slider.isContinuous = true
@@ -49,10 +49,10 @@ final class ScrollSettingsPage: NSView {
             slider.target = self
             slider.action = #selector(smoothTuned)
         }
-        distanceSlider.minValue = 20
-        distanceSlider.maxValue = 80
-        durationSlider.minValue = 0.10
-        durationSlider.maxValue = 0.60
+        distanceSlider.minValue = 30
+        distanceSlider.maxValue = 200
+        durationSlider.minValue = 0.5
+        durationSlider.maxValue = 5.0
         for label in [distanceValue, durationValue] {
             label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
             label.textColor = .secondaryLabelColor
@@ -76,8 +76,8 @@ final class ScrollSettingsPage: NSView {
             SettingsLayout.section("滚动", [
                 SettingsLayout.row("平滑滚动", detail: "只接管滚轮，触控板保持系统手感",
                                    control: smoothSwitch),
-                SettingsLayout.row("每行滚动", control: trailing(distanceSlider, distanceValue)),
-                SettingsLayout.row("平滑时长", control: trailing(durationSlider, durationValue)),
+                SettingsLayout.row("每格滚动", detail: "滚轮转一格走多远", control: trailing(distanceSlider, distanceValue)),
+                SettingsLayout.row("平滑度", detail: "越大尾巴越长，越小越跟手", control: trailing(durationSlider, durationValue)),
                 SettingsLayout.plain(forceMouseCheck),
                 SettingsLayout.plain(diagnosticLabel),
             ]),
@@ -87,7 +87,7 @@ final class ScrollSettingsPage: NSView {
     func reload(enabled: Bool) {
         smoothSwitch.state = enabled ? .on : .off
         if let settings = settings?() {
-            distanceSlider.doubleValue = settings.pointsPerLine
+            distanceSlider.doubleValue = settings.pointsPerTick
             durationSlider.doubleValue = settings.duration
             forceMouseCheck.state = settings.forceMouse ? .on : .off
         }
@@ -113,8 +113,8 @@ final class ScrollSettingsPage: NSView {
     }
 
     private func updateTuning() {
-        distanceValue.stringValue = String(format: "%.0f 点/行", distanceSlider.doubleValue)
-        durationValue.stringValue = String(format: "%.2f 秒", durationSlider.doubleValue)
+        distanceValue.stringValue = String(format: "%.0f 点/格", distanceSlider.doubleValue)
+        durationValue.stringValue = String(format: "%.1f 档", durationSlider.doubleValue)
         let enabled = smoothSwitch.state == .on
         distanceSlider.isEnabled = enabled
         durationSlider.isEnabled = enabled

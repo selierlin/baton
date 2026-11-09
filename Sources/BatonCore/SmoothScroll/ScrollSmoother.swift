@@ -5,6 +5,9 @@ import os
 
 /// 把离散滚轮事件改写成「一串带相位的像素位移」再投回去。
 ///
+/// 手感和 Mos 对齐，插值模型见 `ScrollSmootherEngine`：输入归一化 → 乘倍率 → 每帧
+/// 只走剩余距离的一个固定比例 → 再过一道 5 点低通。
+///
 /// 实现的几个关键决定（对照 Mos 的 `ScrollCore` / `ScrollPoster`）：
 /// 1. **不用 `isContinuous` 判断触控板**。不少鼠标驱动（含部分蓝牙鼠标、装了厂商驱动的）
 ///    会把滚轮事件标成连续事件，按 `isContinuous` 过滤会导致「完全没效果」。
@@ -13,10 +16,10 @@ import os
 ///    事件进了进程但滚动视图不动，表现就是「拦截成功、画面不动」。
 ///    走 HID tap 要自己补两件东西：`location`（否则事件落在原点，按位置命中会滚错窗口）
 ///    和 `eventSourceUserData` 指纹（否则会被自己的 tap 再吞一遍，无限循环）。
-/// 3. **按显示器刷新率逐帧投**，不是固定 8ms。8ms 在 60Hz 屏上是两帧并一帧，
+/// 3. **每帧投的是小数**。Mos 也是把 `pointDelta` 写成 Double；取整会让慢速滚动出现
+///    「0,0,1,0,0,1」这种一格格挪的台阶，是最容易被察觉的不丝滑。
+/// 4. **按显示器刷新率逐帧投**，不是固定 8ms。8ms 在 60Hz 屏上是两帧并一帧，
 ///    测出来就是「一大步 + 一小步」的锯齿，看着发卡。
-/// 4. **帧循环用 `CADisplayLink`，dt 取标称帧长**。不用真实间隔：主线程偶尔卡一下时，
-///    按真实 dt 补偿会让下一帧一次吐出好几帧的量，看起来就是个「跳」。
 @MainActor
 public final class ScrollSmoother {
     /// 自投事件的指纹。"BATO"
@@ -85,33 +88,39 @@ public final class ScrollSmoother {
             return false
         }
 
-        let scale = settings.pointsPerLine
-        // 报行数的鼠标：一行 ≈ 40pt（实测 NSScrollView 里 1 行 = 40pt）。
-        // 报像素的鼠标：本身就已经是点，没有「行」可乘，只能按 40pt 为基准换算倍率——
-        // 否则这个滑杆对它们完全不生效（拖到 20 和 80 一个手感）。
-        let factor: Double
-        switch sample.unit {
-        case .lines:
-            factor = scale
-        case .points:
-            factor = scale / SmoothScrollSettings.referencePointsPerLine
+        // 两种单位不能套同一个倍率：
+        //
+        // - 报行数的鼠标：一格（1 行或 3 行）都归一到「一个基准格」再乘倍率，
+        //   这是 Mos 的归一化，让不同鼠标一格的位移一致。
+        // - 报像素的鼠标：它给的就是点，本来已经和屏幕 1:1。再乘 3.6 会直接快 3 倍，
+        //   所以这里只按「倍率相对默认档的比值」做微调，默认档等于 1:1（和 0.1.x 一致）。
+        let reference = SmoothScrollSettings().speed
+        func points(_ raw: Double, _ unit: ScrollUnit) -> Double {
+            guard raw != 0 else { return 0 }
+            switch unit {
+            case .lines:
+                return (raw < 0 ? -1 : 1) * SmoothScrollSettings.referenceStep * settings.speed
+            case .points:
+                return raw * settings.speed / reference
+            }
         }
-        framer.push(x: sample.deltaX * factor,
-                    y: sample.deltaY * factor,
+        let tickY = points(sample.deltaY, sample.unit)
+        framer.push(x: points(sample.deltaX, sample.unit),
+                    y: tickY,
                     flags: CGEventFlags(rawValue: sample.flags),
-                    duration: settings.duration,
-                    maxPending: settings.maxPending)
+                    trans: settings.trans,
+                    deadZone: settings.deadZone)
 
         let source = driver.map { $0.split(separator: ".").last.map(String.init) ?? $0 } ?? "滚轮"
-        let amount = Int((sample.deltaY * factor).rounded())
-        // 把单位写进诊断串：看不出滑杆有没有生效时，一眼能分清是「行」还是「像素」。
+        // 诊断串写这一格实际走了多少点：滑杆有没有生效、单位认没认对，一眼能看出来
         let detail = sample.unit == .lines
-            ? "\(Int(sample.deltaY)) 行"
-            : "像素 ×\(String(format: "%.2f", factor))"
+            ? "\(Int(abs(sample.deltaY).rounded())) 行"
+            : "\(Int(abs(sample.deltaY).rounded())) 像素"
+        let amount = Int(tickY.rounded())
         lastDecision = "已接管：\(source) \(detail) → \(amount > 0 ? "+" : "")\(amount) 点"
         swallowedTicks += 1
         if ProcessInfo.processInfo.environment["BATON_SCROLL_DEBUG"] != nil {
-            print("[consume] dy=\(sample.deltaY) factor=\(factor) unit=\(sample.unit) pid=\(sample.sourcePID)")
+            print("[consume] dy=\(sample.deltaY) unit=\(sample.unit) pid=\(sample.sourcePID) tick=\(tickY)")
         }
         return true
     }
@@ -145,10 +154,13 @@ final class ScrollFramer: @unchecked Sendable {
 
     private var engine = ScrollSmootherEngine()
     private var flags: CGEventFlags = []
-    private var duration: Double = 0.32
+    private var trans: Double = 0.085
+    private var deadZone: Double = 1
     private var link: CADisplayLink?
     private var lastTick: CFAbsoluteTime = 0
     private var delivered = 0
+    /// 还没攒够死区的位移，下一帧一起投
+    private var carry = (x: 0.0, y: 0.0)
 
     var postedFrames: Int {
         lock.lock()
@@ -157,11 +169,12 @@ final class ScrollFramer: @unchecked Sendable {
     }
 
     func push(x: Double, y: Double, flags: CGEventFlags,
-              duration: Double, maxPending: Double) {
+              trans: Double, deadZone: Double) {
         lock.lock()
         self.flags = flags
-        self.duration = duration
-        engine.add(x: x, y: y, maxPending: maxPending)
+        self.trans = trans
+        self.deadZone = deadZone
+        engine.add(x: x, y: y)
         let needStart = link == nil
         lock.unlock()
 
@@ -171,6 +184,7 @@ final class ScrollFramer: @unchecked Sendable {
     func reset() {
         lock.lock()
         engine.reset()
+        carry = (0, 0)
         link?.invalidate()
         link = nil
         lock.unlock()
@@ -211,35 +225,45 @@ final class ScrollFramer: @unchecked Sendable {
         lock.lock()
         let dt = min(max(step, 1.0 / 240.0), 1.0 / 30.0)
 
-        let frame = engine.step(dt: dt, duration: duration)
+        // 比例是按「一帧 1/60 秒」定的。120Hz 屏上每帧还是吃同样比例的话，
+        // 同样一段时间里就多吃一倍，滚动速度翻倍、尾巴只剩一半——换算成等效比例。
+        let effective = 1 - pow(1 - trans, dt * 60)
+        let frame = engine.step(trans: effective, dt: dt, deadZone: deadZone)
         if frame.finished {
             link?.invalidate()
             link = nil
         }
         let flags = self.flags
+        let dead = deadZone
+        // 低于死区的帧先攒着，不要就地丢掉：指数尾巴最后会连续几十帧都不足 1pt，
+        // 一帧一帧丢等于把这一格的距离偷偷扣掉 8%（实测 3 格少走 11pt）。
+        let dx = frame.x + carry.x
+        let dy = frame.y + carry.y
+        let leftover = frame.finished && abs(dx) + abs(dy) >= 0.3
+        let shouldPost = abs(dx) > dead || abs(dy) > dead || leftover
+        // 收尾时剩下的零点几磅一次补掉，不然永远发不出去
+        carry = shouldPost ? (0, 0) : (dx, dy)
+        if shouldPost { delivered += 1 }
         lock.unlock()
 
-        guard frame.x != 0 || frame.y != 0 else { return }
-        post(dx: frame.x, dy: frame.y, flags: flags)
-
-        lock.lock()
-        delivered += 1
-        lock.unlock()
+        guard shouldPost else { return }
+        post(dx: dx, dy: dy, flags: flags)
     }
 
-    private func post(dx: Int, dy: Int, flags: CGEventFlags) {
+    private func post(dx: Double, dy: Double, flags: CGEventFlags) {
         guard let event = CGEvent(scrollWheelEvent2Source: nil,
                                   units: .pixel,
                                   wheelCount: 2,
-                                  wheel1: Int32(clamping: dy),
-                                  wheel2: Int32(clamping: dx),
+                                  wheel1: Int32(clamping: Int(dy.rounded())),
+                                  wheel2: Int32(clamping: Int(dx.rounded())),
                                   wheel3: 0) else {
             return
         }
 
-        // AppKit 的 scrollingDeltaY 读的是 pointDelta；isContinuous 决定它按「像素」还是「行」解释
-        event.setDoubleValueField(.scrollWheelEventPointDeltaAxis1, value: Double(dy))
-        event.setDoubleValueField(.scrollWheelEventPointDeltaAxis2, value: Double(dx))
+        // AppKit 的 scrollingDeltaY 读的是 pointDelta；isContinuous 决定它按「像素」还是「行」解释。
+        // 这里必须写 Double：取整是慢速滚动出现台阶声/台阶感的直接原因。
+        event.setDoubleValueField(.scrollWheelEventPointDeltaAxis1, value: dy)
+        event.setDoubleValueField(.scrollWheelEventPointDeltaAxis2, value: dx)
         event.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
         event.setIntegerValueField(.eventSourceUserData, value: ScrollSmoother.magicTag)
         // 惯性相位必须清零：带 momentum 的事件会被 App 当成系统惯性，和我们的帧叠在一起
@@ -249,9 +273,8 @@ final class ScrollFramer: @unchecked Sendable {
         event.flags = flags
 
         if ProcessInfo.processInfo.environment["BATON_SCROLL_DEBUG"] != nil {
-            print(String(format: "[frame] dy=%d dx=%d loc=(%.0f,%.0f) front=%@",
-                         dy, dx, event.location.x, event.location.y,
-                         NSWorkspace.shared.frontmostApplication?.localizedName ?? "-"))
+            print(String(format: "[frame] dy=%.2f dx=%.2f loc=(%.0f,%.0f)",
+                         dy, dx, event.location.x, event.location.y))
         }
 
         event.post(tap: .cghidEventTap)

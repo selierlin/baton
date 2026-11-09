@@ -249,7 +249,7 @@ case "--scroll-status":
     MainActor.assumeIsolated {
         let smoother = ScrollSmoother(store: try? SmoothScrollStore())
         let s = smoother.settings
-        print("enabled=\(s.enabled) pointsPerLine=\(s.pointsPerLine) duration=\(s.duration) maxPending=\(s.maxPending)")
+        print("enabled=\(s.enabled) pointsPerTick=\(s.pointsPerTick) speed=\(s.speed) duration=\(s.duration) trans=\(s.trans) deadZone=\(s.deadZone) forceMouse=\(s.forceMouse)")
         for kind in PermissionKind.allCases {
             print("perm \(kind.rawValue)=\(PermissionCenter.status(kind).rawValue)")
         }

@@ -174,7 +174,8 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
         }
         scroll.onTuning = { [weak self] distance, duration in
             self?.smoothScroll?.apply { settings in
-                settings.pointsPerLine = distance
+                // 滑杆给的是「一格多少点」，模型里存的是倍率
+                settings.speed = distance / SmoothScrollSettings.referenceStep
                 settings.duration = duration
             }
         }
