@@ -3,7 +3,9 @@ import XCTest
 
 @MainActor
 final class DiagnosticBundleTests: XCTestCase {
-    private var root: URL!
+    /// XCTestCase 的 setUp / tearDown 是非隔离的，Swift 6.1 会把这里的覆写
+    /// 也当成 nonisolated（6.2 才改推断）。测试串行执行，加 nonisolated(unsafe) 直说。
+    nonisolated(unsafe) private var root: URL!
 
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory
