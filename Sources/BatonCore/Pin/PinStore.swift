@@ -20,20 +20,20 @@ public struct PinRecord: Sendable, Codable, FetchableRecord, PersistableRecord {
     public var thumbnail: Bool
 }
 
+/// 一条贴图实例的内容。图走位图那条路（按窗口像素解码），文字走文字卡。
+public enum PinStoredContent: Sendable {
+    case image(source: PinImageSource, scale: CGFloat)
+    case text(PinTextContent)
+}
+
 public struct StoredPin: Sendable {
     public let id: String
-    /// 位图来源：显示按窗口像素取，导出才回原图。
-    public let source: PinImageSource
-    /// 原图倍率；窗口尺寸 = 像素 ÷ 这个值
-    public let scale: CGFloat
+    public let content: PinStoredContent
     public let frame: CGRect
     public let opacity: Double
     /// R 的还原目标；nil 表示老记录，交给调用方按缩略图尺寸推断。
     public let baseZoom: CGFloat?
     public let isThumbnail: Bool
-
-    /// 原图，按需从 blob 解码。
-    public var image: CGImage? { source.full() }
 }
 
 /// 贴图落库：一张图一个 `item`，每钉一次一条 `pin_instance`。
@@ -71,8 +71,29 @@ public final class PinStore: Sendable {
                              arguments: [Double(scale), item.id])
         }
 
+        return try insertInstance(itemID: item.id, frame: frame, screenUUID: screenUUID,
+                                  opacity: opacity, baseZoom: baseZoom)
+    }
+
+    /// 文字贴图：item 里只存文字，没有 blob。像素尺寸留空，恢复时按文字重新排版。
+    @discardableResult
+    public func save(text: String, frame: CGRect, screenUUID: String?,
+                     opacity: Double = 1, baseZoom: CGFloat? = nil) throws -> String {
+        let data = Data(text.utf8)
+        let draft = ClipDraft(kind: .text,
+                              contentHash: PasteboardReader.sha256(data),
+                              text: text,
+                              byteSize: data.count,
+                              sourceApp: "Baton")
+        let item = try clipboard.insert(draft).item
+        return try insertInstance(itemID: item.id, frame: frame, screenUUID: screenUUID,
+                                  opacity: opacity, baseZoom: baseZoom)
+    }
+
+    private func insertInstance(itemID: String, frame: CGRect, screenUUID: String?,
+                                opacity: Double, baseZoom: CGFloat?) throws -> String {
         let record = PinRecord(id: UUID().uuidString,
-                               itemID: item.id,
+                               itemID: itemID,
                                frame: Self.encode(frame),
                                screenUUID: screenUUID,
                                zOrder: try nextZOrder(),
@@ -140,17 +161,26 @@ public final class PinStore: Sendable {
                 guard let item = try ClipItem.fetchOne(conn,
                                                        sql: "SELECT * FROM item WHERE id = ?",
                                                        arguments: [record.itemID]),
-                      let blobPath = item.blobPath,
-                      let frame = Self.decode(record.frame),
-                      let width = item.pixelWidth,
-                      let height = item.pixelHeight else { continue }
-                // 这里不再解码位图：一张 2880×1800 的图 19.8 MB，贴图多开几张就撑爆。
-                // 显示时按窗口像素子采样解码，导出时才取原图。
-                let url = db.blobURL(forRelativePath: blobPath)
+                      let frame = Self.decode(record.frame) else { continue }
+
+                let content: PinStoredContent
+                if item.clipKind == .text, let text = item.text {
+                    // 文字贴图没有 blob：显示时按文字重新排版，不用解码任何东西
+                    content = .text(PinTextContent(text: text))
+                } else {
+                    guard let blobPath = item.blobPath,
+                          let width = item.pixelWidth,
+                          let height = item.pixelHeight else { continue }
+                    // 这里不再解码位图：一张 2880×1800 的图 19.8 MB，贴图多开几张就撑爆。
+                    // 显示时按窗口像素子采样解码，导出时才取原图。
+                    let url = db.blobURL(forRelativePath: blobPath)
+                    content = .image(source: PinImageSource(pixelSize: CGSize(width: width, height: height),
+                                                           fileURL: url),
+                                     scale: max(CGFloat(item.scale ?? 1), 1))
+                }
+
                 pins.append(StoredPin(id: record.id,
-                                      source: PinImageSource(pixelSize: CGSize(width: width, height: height),
-                                                             fileURL: url),
-                                      scale: max(CGFloat(item.scale ?? 1), 1),
+                                      content: content,
                                       frame: frame,
                                       opacity: record.opacity,
                                       baseZoom: record.baseZoom.map { CGFloat($0) },

@@ -39,6 +39,26 @@ public final class PinController {
 
     public var count: Int { pins.count }
 
+    /// 贴图细边框：开着截图阴影就不画（见 PinView.drawsOutline）。
+    private var drawsOutline = true
+
+    /// 设置项变化时由 AppShell 调用，已贴在屏幕上的也要立刻跟着变。
+    public func setDrawsOutline(_ draws: Bool) {
+        drawsOutline = draws
+        for pin in pins { pin.setDrawsOutline(draws) }
+    }
+
+    /// 统一登记新贴图：先把当前边框设置带上，再进列表。
+    private func register(_ controller: PinWindowController) {
+        controller.setDrawsOutline(drawsOutline)
+        pins.append(controller)
+    }
+
+    /// 当前贴在屏幕上的贴图窗口号。抓帧时要把这些窗口「留下」，不能被当成自己的 UI 排除掉。
+    public var pinWindowNumbers: Set<CGWindowID> {
+        Set(pins.compactMap(\.windowNumber))
+    }
+
     /// 诊断用：把最近钉的那张切到标注态（`Baton --pin-probe` 用，正常流程走空格）。
     public func debugBeginEditingLast() {
         pins.last?.debugSetEditing(true)
@@ -132,7 +152,7 @@ public final class PinController {
         controller.onDropFile = { [weak self] url in self?.pinFile(url) }
         // 贴图窗口里的「贴图」：把带标注的合成图再钉一张
         controller.onPinCopy = { [weak self] image, scale in self?.pin(image, scale: scale) }
-        pins.append(controller)
+        register(controller)
         controller.show()
         ActionLog.result("pin.show", "count=\(pins.count) px=\(image.width)x\(image.height) scale=\(scale) at=\(screenRect.map { "\(Int($0.origin.x)),\(Int($0.origin.y))" } ?? "-")")
     }
@@ -141,8 +161,12 @@ public final class PinController {
     public func restore() {
         guard let store else { return }
         for stored in store.loadAll() {
-            let controller = PinWindowController(source: stored.source,
-                                                 scale: stored.scale,
+            let onClose: (UUID) -> Void = { [weak self] id in self?.pins.removeAll { $0.id == id } }
+            let controller: PinWindowController
+            switch stored.content {
+            case .image(let source, let scale):
+                controller = PinWindowController(source: source,
+                                                 scale: scale,
                                                  anchor: nil,
                                                  initialFrame: stored.frame,
                                                  opacity: stored.opacity,
@@ -150,12 +174,21 @@ public final class PinController {
                                                  pinID: stored.id,
                                                  baseZoom: stored.baseZoom,
                                                  isThumbnail: stored.isThumbnail,
-                                                 onClose: { [weak self] id in
-                self?.pins.removeAll { $0.id == id }
-            })
+                                                 onClose: onClose)
+            case .text(let text):
+                controller = PinWindowController(text: text,
+                                                 anchor: nil,
+                                                 initialFrame: stored.frame,
+                                                 opacity: stored.opacity,
+                                                 store: store,
+                                                 pinID: stored.id,
+                                                 baseZoom: stored.baseZoom,
+                                                 isThumbnail: stored.isThumbnail,
+                                                 onClose: onClose)
+            }
             controller.onDropFile = { [weak self] url in self?.pinFile(url) }
             controller.onPinCopy = { [weak self] image, scale in self?.pin(image, scale: scale) }
-            pins.append(controller)
+            register(controller)
             controller.show()
         }
     }
@@ -168,6 +201,79 @@ public final class PinController {
     }
 
     public func toggleHidden() { setHidden(!isHidden) }
+
+    /// 把剪贴板里的图贴到屏幕上（Longshot 的「剪贴板贴图」）。
+    ///
+    /// 复制一张图就能直接钉在桌面上对比，不用先截图、也不用先存成文件。
+    /// 剪贴板图没有屏幕倍率信息，按 1px = 1pt 钉、太大的缩到屏幕 80%——
+    /// 和「从文件贴图」同一套规则，否则同一张图两条路贴出来会一大一小。
+    ///
+    /// 剪贴板里只有文字时就钉文字卡：复制一段地址、一串命令，比截图再贴顺手得多。
+    @discardableResult
+    public func pinPasteboard(from pasteboard: NSPasteboard = .general) -> Bool {
+        if let image = Self.pasteboardImage(from: pasteboard) {
+            pin(image, scale: 1, fitFraction: 0.8)
+            return true
+        }
+        if let text = Self.pasteboardText(from: pasteboard) {
+            return pinText(text)
+        }
+        ActionLog.fail("pin.clipboard", "no-image-or-text")
+        return false
+    }
+
+    /// 把一段文字钉在屏幕上。
+    ///
+    /// 文字贴图是「卡片」，不是位图：缩放时重新排版，字始终清晰；
+    /// 代价是它没有图片标注那套能力（空格开标注对文字卡无效）。
+    @discardableResult
+    public func pinText(_ text: String, fitFraction: CGFloat = 0.8) -> Bool {
+        let content = PinTextContent(text: text)
+        guard !content.isBlank else {
+            ActionLog.fail("pin.text", "blank")
+            return false
+        }
+        if isHidden { setHidden(false) }
+        let controller = PinWindowController(text: content,
+                                             anchor: nil,
+                                             initialFrame: nil,
+                                             opacity: 1,
+                                             store: store,
+                                             pinID: nil,
+                                             fitFraction: fitFraction,
+                                             onClose: { [weak self] id in
+            self?.pins.removeAll { $0.id == id }
+        })
+        controller.onDropFile = { [weak self] url in self?.pinFile(url) }
+        register(controller)
+        controller.show()
+        ActionLog.result("pin.text.show", "count=\(pins.count) chars=\(text.count)")
+        return true
+    }
+
+    /// 从剪贴板取一段纯文字。全空白按「没有」处理，别钉出一张空卡。
+    static func pasteboardText(from pasteboard: NSPasteboard = .general) -> String? {
+        guard let text = pasteboard.string(forType: .string),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return text
+    }
+
+    /// 从剪贴板取一张位图。认 PNG / TIFF 两种原始字节。
+    ///
+    /// 不走 `NSImage(pasteboard:)`：那条路会按当前屏幕倍率重新栅格化，
+    /// 复制来的截图会掉一半像素，贴出来是糊的。
+    static func pasteboardImage(from pasteboard: NSPasteboard = .general) -> CGImage? {
+        for type in [NSPasteboard.PasteboardType.png, .tiff] {
+            guard let data = pasteboard.data(forType: type),
+                  let source = CGImageSourceCreateWithData(data as CFData, nil) else { continue }
+            if let image = CGImageSourceCreateImageAtIndex(
+                source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
+            ) {
+                return image
+            }
+        }
+        return nil
+    }
 
     /// 从磁盘上的图片文件贴图（Finder 拖入、⌘O 打开都走这里）。
     ///
@@ -198,7 +304,10 @@ public final class PinController {
 final class PinWindowController: NSObject, NSWindowDelegate {
     let id = UUID()
 
-    private let source: PinImageSource
+    /// 位图贴图才有；文字贴图是 nil。两者互斥。
+    private let source: PinImageSource?
+    /// 文字贴图才有；位图贴图是 nil。
+    private let text: PinTextContent?
     private let baseSize: CGSize
     private let imageScale: CGFloat
     /// 首次落位时最多占屏的比例：截图给 1（原样），文件图给 0.8。
@@ -214,6 +323,8 @@ final class PinWindowController: NSObject, NSWindowDelegate {
     private let onClose: (UUID) -> Void
     /// 往这张贴图上丢文件：交给 PinController 再钉一张，自己不动。
     var onDropFile: ((URL) -> Void)?
+    /// 细边框开关，由 PinController 统一配置（见 PinView.drawsOutline）。
+    private var drawsOutline = true
 
     private var window: PinPanel?
     private var view: PinView?
@@ -275,6 +386,7 @@ final class PinWindowController: NSObject, NSWindowDelegate {
          fitFraction: CGFloat = 1,
          onClose: @escaping (UUID) -> Void) {
         self.source = source
+        self.text = nil
         self.imageScale = max(scale, 1)
         self.fitFraction = fitFraction
         self.baseSize = CGSize(width: source.pixelSize.width / max(scale, 1),
@@ -288,6 +400,40 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         self.storedThumbnail = isThumbnail
         self.onClose = onClose
         super.init()
+    }
+
+    /// 文字贴图：尺寸由文字排版量出来，字号 1x 起步，缩放时才整体放大。
+    init(text: PinTextContent, anchor: CGRect?, initialFrame: CGRect?,
+         opacity: Double, store: PinStore?, pinID: String?,
+         baseZoom: CGFloat? = nil, isThumbnail: Bool = false,
+         fitFraction: CGFloat = 0.8,
+         onClose: @escaping (UUID) -> Void) {
+        self.source = nil
+        self.text = text
+        self.imageScale = 1
+        self.fitFraction = fitFraction
+        self.baseSize = text.baseSize
+        self.anchor = anchor
+        self.initialFrame = initialFrame
+        self.initialOpacity = opacity
+        self.store = store
+        self.pinID = pinID
+        self.storedBaseZoom = baseZoom
+        self.storedThumbnail = isThumbnail
+        self.onClose = onClose
+        super.init()
+    }
+
+    /// 贴图窗口号；窗口还没建出来（或已关）时为 nil。
+    var windowNumber: CGWindowID? {
+        guard let window, window.windowNumber > 0 else { return nil }
+        return CGWindowID(window.windowNumber)
+    }
+
+    /// 开关细边框。窗口已经建出来的立刻重画，没建的等 show() 时带上。
+    func setDrawsOutline(_ draws: Bool) {
+        drawsOutline = draws
+        view?.drawsOutline = draws
     }
 
     /// 隐藏/显示：隐藏只是把窗口挪出屏幕，DB 记录和 frame 都不动。
@@ -337,7 +483,7 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         panel.alphaValue = CGFloat(initialOpacity)
         panel.delegate = self
 
-        let view = PinView(source: source)
+        let view = PinView(source: source, text: text)
         view.onZoom = { [weak self] step, anchor in
             self?.zoomByGesture(step: step, at: anchor)
         }
@@ -347,6 +493,7 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         view.onDropFile = { [weak self] url in self?.onDropFile?(url) }
         // 缩略态那一圈加粗边框得跟着视图一起立起来（恢复出来的缩略图直接就是加粗态）
         view.emphasizedBorder = isThumbnailMode
+        view.drawsOutline = drawsOutline
         panel.contentView = view
         self.view = view
 
@@ -363,16 +510,23 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         if pinID == nil, NSApp.isActive { panel.makeKey() }
 
         // 只有新钉的才写库；恢复出来的已经有记录
-        if pinID == nil, let store, let image = source.full() {
-            pinID = try? store.save(image: image, scale: imageScale, frame: panel.frame,
-                                    screenUUID: Self.screenUUID(panel.screen),
-                                    opacity: Double(panel.alphaValue),
-                                    baseZoom: baseZoom)
-            if let pinID {
-                // 先把 blob 认回来再丢原图：显示（换桶重新解）和导出（原图）
-                // 都靠它，否则缩放一下贴图就空白、空格也建不出画布。
-                if let url = store.blobURL(forPinID: pinID) { source.adopt(fileURL: url) }
-                source.releaseOriginal()
+        if pinID == nil, let store {
+            let uuid = Self.screenUUID(panel.screen)
+            if let source, let image = source.full() {
+                pinID = try? store.save(image: image, scale: imageScale, frame: panel.frame,
+                                        screenUUID: uuid,
+                                        opacity: Double(panel.alphaValue),
+                                        baseZoom: baseZoom)
+                if let pinID {
+                    // 先把 blob 认回来再丢原图：显示（换桶重新解）和导出（原图）
+                    // 都靠它，否则缩放一下贴图就空白、空格也建不出画布。
+                    if let url = store.blobURL(forPinID: pinID) { source.adopt(fileURL: url) }
+                    source.releaseOriginal()
+                }
+            } else if let text {
+                pinID = try? store.save(text: text.text, frame: panel.frame, screenUUID: uuid,
+                                        opacity: Double(panel.alphaValue),
+                                        baseZoom: baseZoom)
             }
         }
     }
@@ -433,11 +587,11 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         case .opacityDown:
             changeOpacity(by: -0.1)
         case .copy:
-            ensureAnnotator()?.copyFlattened()
+            if text != nil { copyText() } else { ensureAnnotator()?.copyFlattened() }
         case .save:
-            ensureAnnotator()?.saveFlattened()
+            if text != nil { NSSound.beep() } else { ensureAnnotator()?.saveFlattened() }
         case .saveAndCopy:
-            ensureAnnotator()?.saveAndCopy()
+            if text != nil { NSSound.beep() } else { ensureAnnotator()?.saveAndCopy() }
         case .escape:
             if annotator?.isEditing == true {
                 annotator?.setEditing(false)
@@ -451,10 +605,11 @@ final class PinWindowController: NSObject, NSWindowDelegate {
     }
 
     /// 标注层按需创建：没进过标注的贴图不该为它付一条面板 + 一堆视图的代价。
+    /// 文字贴图没有位图可画，不建标注层。
     @discardableResult
     private func ensureAnnotator() -> PinAnnotator? {
         if let annotator { return annotator }
-        guard let window, let view else { return nil }
+        guard let window, let view, let source else { return nil }
 
         let annotator = PinAnnotator(source: source, hostView: view, hostWindow: window)
         annotator.onKey = { [weak self] event in self?.handleKey(event) ?? false }
@@ -740,11 +895,14 @@ final class PinWindowController: NSObject, NSWindowDelegate {
         let menu = NSMenu()
 
         // 键位写在标题里，不当 keyEquivalent：弹出菜单里挂等价键会真去抢键盘
-        let annotate = NSMenuItem(title: annotator?.isEditing == true ? "完成编辑  空格" : "标注  空格",
-                                  action: #selector(toggleEditMenuItem),
-                                  keyEquivalent: "")
-        annotate.target = self
-        menu.addItem(annotate)
+        // 文字贴图没有标注层，这一项直接不出
+        if text == nil {
+            let annotate = NSMenuItem(title: annotator?.isEditing == true ? "完成编辑  空格" : "标注  空格",
+                                      action: #selector(toggleEditMenuItem),
+                                      keyEquivalent: "")
+            annotate.target = self
+            menu.addItem(annotate)
+        }
 
         let thumbnail = NSMenuItem(title: "缩略图模式  R", action: #selector(toggleThumbnailMenuItem),
                                    keyEquivalent: "")
@@ -754,18 +912,21 @@ final class PinWindowController: NSObject, NSWindowDelegate {
 
         menu.addItem(.separator())
 
-        let copy = NSMenuItem(title: "复制图片  ↩", action: #selector(copyImage), keyEquivalent: "")
+        let copy = NSMenuItem(title: text == nil ? "复制图片  ↩" : "复制文字  ↩",
+                              action: #selector(copyImage), keyEquivalent: "")
         copy.target = self
         menu.addItem(copy)
 
-        let save = NSMenuItem(title: "保存到本地  ⌘D", action: #selector(saveImage), keyEquivalent: "")
-        save.target = self
-        menu.addItem(save)
+        if text == nil {
+            let save = NSMenuItem(title: "保存到本地  ⌘D", action: #selector(saveImage), keyEquivalent: "")
+            save.target = self
+            menu.addItem(save)
 
-        let saveAndCopy = NSMenuItem(title: "保存并复制  ⇧⌘D", action: #selector(saveAndCopyImage),
-                                     keyEquivalent: "")
-        saveAndCopy.target = self
-        menu.addItem(saveAndCopy)
+            let saveAndCopy = NSMenuItem(title: "保存并复制  ⇧⌘D", action: #selector(saveAndCopyImage),
+                                         keyEquivalent: "")
+            saveAndCopy.target = self
+            menu.addItem(saveAndCopy)
+        }
 
         menu.addItem(.separator())
 
@@ -807,24 +968,43 @@ final class PinWindowController: NSObject, NSWindowDelegate {
     }
 
     @objc private func copyImage() {
+        if text != nil {
+            copyText()
+            return
+        }
         // 有标注就复制合成的，没有就复制原图；`flattened()` 两种情况都对
         if let annotator {
             annotator.copyFlattened()
             return
         }
-        guard let full = source.full() else { return }
+        guard let full = source?.full() else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.writeObjects([NSImage(cgImage: full, size: .zero)])
     }
 
+    /// 文字贴图的复制：把原文放回剪贴板，而不是截一张图。
+    private func copyText() {
+        guard let text else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text.text, forType: .string)
+        ActionLog.result("pin.text.copy", "chars=\(text.text.count)")
+    }
+
     @objc private func saveImage() {
-        guard let annotator = ensureAnnotator() else { return }
+        guard let annotator = ensureAnnotator() else {
+            NSSound.beep()
+            return
+        }
         annotator.saveFlattened()
     }
 
     @objc private func saveAndCopyImage() {
-        guard let annotator = ensureAnnotator() else { return }
+        guard let annotator = ensureAnnotator() else {
+            NSSound.beep()
+            return
+        }
         annotator.saveAndCopy()
     }
 
@@ -874,7 +1054,12 @@ private final class PinPanel: NSPanel {
 }
 
 private final class PinView: NSView {
-    private let source: PinImageSource
+    /// 位图贴图才有；文字贴图是 nil。
+    private let source: PinImageSource?
+    /// 文字贴图才有；位图贴图是 nil。
+    private let text: PinTextContent?
+    /// 裁到高度上限后的展示文本（全文在 `text.text` 里，复制时用全文）
+    private let displayText: String?
     /// 按窗口像素重采样后的显示位图，和 bounds 在设备像素上一一对应。
     private var displayImage: CGImage?
     private var displayBucket = 0
@@ -885,8 +1070,8 @@ private final class PinView: NSView {
     var onMenu: ((NSEvent) -> Bool)?
     var onDropFile: ((URL) -> Void)?
 
-    /// 诊断用：显示位图有没有解出来。
-    var hasContent: Bool { displayImage != nil }
+    /// 诊断用：有东西可画吗（文字卡没有位图，也算有内容）。
+    var hasContent: Bool { text != nil || displayImage != nil }
 
     /// 缩略态那圈加粗边框。纯绘制，没有动画、没有定时器，缩略图摆一整天也不耗 CPU。
     var emphasizedBorder = false {
@@ -896,8 +1081,19 @@ private final class PinView: NSView {
         }
     }
 
-    init(source: PinImageSource) {
+    /// 细边框。开了截图阴影就不画：窗口阴影已经把贴图和底下的内容分开，
+    /// 再描一圈线反而像贴纸贴了层黑边。缩略态的粗圈是「选中」提示，不受影响。
+    var drawsOutline = true {
+        didSet {
+            guard drawsOutline != oldValue else { return }
+            needsDisplay = true
+        }
+    }
+
+    init(source: PinImageSource?, text: PinTextContent?) {
         self.source = source
+        self.text = text
+        self.displayText = text?.displayText
         super.init(frame: .zero)
         registerForDraggedTypes([.fileURL])
     }
@@ -927,6 +1123,11 @@ private final class PinView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override var acceptsFirstResponder: Bool { true }
+
+    /// 贴图挂在不激活面板上：从别的 App 回来想直接拖，第一下按下不能先被
+    /// 「聚焦窗口」吃掉，否则得点一次再拖一次。和工具条、标尺画布同一套路。
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override var isFlipped: Bool { true }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -942,6 +1143,11 @@ private final class PinView: NSView {
     /// 只按「窗口设备像素」取图：2920×1800 的截图钉成 600pt 窗口时，
     /// 2x 屏上只需要 1200px，没必要留全图。
     private func updateDisplayImage() {
+        guard let source else {
+            // 文字卡不涉及解码，但换尺寸后字要按新宽度重排
+            needsDisplay = true
+            return
+        }
         let scale = window?.backingScaleFactor ?? 2
         let need = Int(ceil(max(bounds.width, bounds.height) * scale))
         guard need > 0, need != displayBucket else { return }
@@ -952,7 +1158,9 @@ private final class PinView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
-        if let displayImage {
+        if let text {
+            drawTextCard(text, display: displayText ?? text.text, in: bounds)
+        } else if let displayImage {
             // 显示位图通常已经按设备像素对齐，再插值只会糊；
             // 只有原图比窗口还小（放大）时才需要平滑插值。
             let scale = window?.backingScaleFactor ?? 2
@@ -965,21 +1173,53 @@ private final class PinView: NSView {
         if emphasizedBorder {
             // 粗黑圈 + 内侧白线：深色截图和浅色截图上都能一眼看到
             NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.85).setStroke()
-            let outer = NSBezierPath(rect: bounds.insetBy(dx: 1.5, dy: 1.5))
+            let outer = borderPath(bounds.insetBy(dx: 1.5, dy: 1.5))
             outer.lineWidth = 3
             outer.stroke()
 
             NSColor(white: 1, alpha: 0.9).setStroke()
-            let inner = NSBezierPath(rect: bounds.insetBy(dx: 4, dy: 4))
+            let inner = borderPath(bounds.insetBy(dx: 4, dy: 4))
             inner.lineWidth = 1
             inner.stroke()
-        } else {
+        } else if drawsOutline {
             // 细边框：和图内容区分开，浅色截图上也能看出边界
             NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.35).setStroke()
-            let border = NSBezierPath(rect: bounds.insetBy(dx: 0.5, dy: 0.5))
+            let border = borderPath(bounds.insetBy(dx: 0.5, dy: 0.5))
             border.lineWidth = 1
             border.stroke()
         }
+    }
+
+    /// 文字卡是圆角，边框也得跟着圆角，否则四个角上会多出四条直边。
+    private func borderPath(_ rect: NSRect) -> NSBezierPath {
+        text == nil ? NSBezierPath(rect: rect)
+            : NSBezierPath(roundedRect: rect,
+                           xRadius: PinTextContent.cornerRadius,
+                           yRadius: PinTextContent.cornerRadius)
+    }
+
+    /// 文字卡：底色按系统外观选（深色模式浅字配深底），文字矢量绘制，
+    /// 放大多少倍都清晰。字号按窗口宽度等比放大，换行位置不会跳。
+    private func drawTextCard(_ content: PinTextContent, display: String, in rect: NSRect) {
+        let scale = rect.width / PinTextContent.baseWidth
+        let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+
+        let card = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5),
+                                xRadius: PinTextContent.cornerRadius,
+                                yRadius: PinTextContent.cornerRadius)
+        (dark ? NSColor(white: 0.12, alpha: 0.94) : NSColor(white: 1, alpha: 0.96)).setFill()
+        card.fill()
+
+        let inset = PinTextContent.padding * scale
+        let textRect = rect.insetBy(dx: inset, dy: inset)
+        let attributed = NSMutableAttributedString(attributedString: PinTextContent.attributed(
+            display, fontSize: PinTextContent.baseFontSize * scale
+        ))
+        attributed.addAttribute(.foregroundColor,
+                                value: dark ? NSColor(white: 0.96, alpha: 1) : NSColor(white: 0.08, alpha: 1),
+                                range: NSRange(location: 0, length: attributed.length))
+        attributed.draw(with: textRect,
+                        options: [.usesLineFragmentOrigin, .usesFontLeading])
     }
 
     override func scrollWheel(with event: NSEvent) {

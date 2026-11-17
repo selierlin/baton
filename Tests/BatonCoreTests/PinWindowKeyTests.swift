@@ -294,6 +294,14 @@ final class PinWindowKeyTests: XCTestCase {
         view.mouseUp(with: mouse(.leftMouseUp, at: CGPoint(x: 240, y: 125)))
     }
 
+    /// 从别的 App 切回来，第一下按下就要能拖：贴图视图必须接首击，
+    /// 不能先被「聚焦窗口」吃掉，否则用户得点一次再拖一次。
+    func testPinViewAcceptsFirstMouse() throws {
+        let (controller, _) = try makePin()
+        let view = try XCTUnwrap(controller.debugHitView(at: CGPoint(x: 200, y: 100)))
+        XCTAssertTrue(view.acceptsFirstMouse(for: nil))
+    }
+
     func testDragDuringEditingDoesNotMoveWindow() throws {
         let (controller, _) = try makePin()
         XCTAssertTrue(controller.handleKey(key(49)))

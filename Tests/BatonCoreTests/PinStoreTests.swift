@@ -41,8 +41,31 @@ final class PinStoreTests: XCTestCase {
         XCTAssertEqual(stored.count, 1)
         XCTAssertEqual(stored.first?.id, id)
         XCTAssertEqual(stored.first?.frame, frame)
-        XCTAssertEqual(stored.first?.scale, 2)
-        XCTAssertEqual(stored.first?.source.pixelSize.width, 40)
+        guard case .image(let source, let scale) = stored.first?.content else {
+            return XCTFail("应当是位图贴图")
+        }
+        XCTAssertEqual(scale, 2)
+        XCTAssertEqual(source.pixelSize.width, 40)
+    }
+
+    /// 文字贴图：item 里只有文字、没有 blob，恢复时按文字重新排版
+    func testSaveTextPinRoundTrip() throws {
+        let (clipboard, pins) = try makeStore()
+        let frame = CGRect(x: 10, y: 20, width: 320, height: 88)
+        let id = try pins.save(text: "一段要钉住的文字", frame: frame, screenUUID: "ABC")
+
+        let stored = pins.loadAll()
+        XCTAssertEqual(stored.count, 1)
+        XCTAssertEqual(stored.first?.id, id)
+        XCTAssertEqual(stored.first?.frame, frame)
+        XCTAssertNil(pins.blobURL(forPinID: id), "文字贴图不该有 blob")
+
+        guard case .text(let content) = stored.first?.content else {
+            return XCTFail("应当是文字贴图")
+        }
+        XCTAssertEqual(content.text, "一段要钉住的文字")
+        // 钉过的文字也能在剪贴板历史里找到（贴图和历史共用 item 表）
+        XCTAssertEqual(try clipboard.recent(limit: 10).filter { $0.clipKind == .text }.count, 1)
     }
 
     /// 同一张图钉两处：两条 pin 记录，一条 item（blob 只有一份）

@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import ImageIO
 import XCTest
@@ -93,5 +94,65 @@ final class PinImageSourceTests: XCTestCase {
         let first = source.display(maxPixel: 300)
         let second = source.display(maxPixel: 400)
         XCTAssertTrue(first === second, "300 和 400 落在同一个 512 桶")
+    }
+}
+
+/// 剪贴板贴图（Longshot 的「剪贴板贴图」）。
+///
+/// 这条路上最容易错的是「图能贴出来但糊」：`NSImage(pasteboard:)` 会按当前屏幕倍率
+/// 重新栅格化，复制来的截图会掉像素。所以取图只认 PNG / TIFF 的原始字节。
+@MainActor
+final class PinPasteboardImageTests: XCTestCase {
+    private func makeImage(width: Int, height: Int) -> CGImage {
+        let context = CGContext(data: nil, width: width, height: height,
+                                bitsPerComponent: 8, bytesPerRow: width * 4,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(CGColor(srgbRed: 0.2, green: 0.4, blue: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()!
+    }
+
+    private func pngData(_ image: CGImage) -> Data {
+        let data = NSMutableData()
+        let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return data as Data
+    }
+
+    /// 拿一块独立的剪贴板，别动用户在用的那块
+    private func scratchPasteboard() -> NSPasteboard {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("baton-pin-test-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        return pasteboard
+    }
+
+    func testReadsPNGAtOriginalPixelSize() {
+        let pasteboard = scratchPasteboard()
+        pasteboard.setData(pngData(makeImage(width: 300, height: 200)), forType: .png)
+
+        let image = PinController.pasteboardImage(from: pasteboard)
+        XCTAssertEqual(image?.width, 300)
+        XCTAssertEqual(image?.height, 200)
+    }
+
+    /// 从「预览 / Safari」复制来的图常常只给 TIFF，这条也得认
+    func testFallsBackToTIFF() {
+        let pasteboard = scratchPasteboard()
+        let rep = NSBitmapImageRep(cgImage: makeImage(width: 120, height: 90))
+        pasteboard.setData(rep.tiffRepresentation, forType: .tiff)
+
+        let image = PinController.pasteboardImage(from: pasteboard)
+        XCTAssertEqual(image?.width, 120)
+        XCTAssertEqual(image?.height, 90)
+    }
+
+    /// 剪贴板里只有文字时不能贴出个空窗口，要按「没图」处理，让调用方去提示
+    func testTextOnlyClipboardHasNoImage() {
+        let pasteboard = scratchPasteboard()
+        pasteboard.setString("只有文字", forType: .string)
+
+        XCTAssertNil(PinController.pasteboardImage(from: pasteboard))
     }
 }
