@@ -333,6 +333,30 @@ final class AppFieldRuleTests: XCTestCase {
                                                             lastFieldKey: "42"))
     }
 
+    // MARK: - 焦点抖动不切源
+
+    /// 输入框里打字时 Chrome 偶尔读不到焦点：报 page / unknown 不该把源弹回去
+    func testPageAndUnknownContextsAreLeftAlone() {
+        XCTAssertTrue(InputSourceService.keepsSourceOutsideField(BrowserContext(kind: .page),
+                                                                 inAddressBar: false))
+        XCTAssertTrue(InputSourceService.keepsSourceOutsideField(BrowserContext(kind: .unknown),
+                                                                 inAddressBar: false))
+    }
+
+    /// 输入框和地址栏照旧判定
+    func testFieldAndAddressBarAreNotLeftAlone() {
+        XCTAssertFalse(InputSourceService.keepsSourceOutsideField(BrowserContext(kind: .field),
+                                                                  inAddressBar: false))
+        XCTAssertFalse(InputSourceService.keepsSourceOutsideField(BrowserContext(kind: .addressBar),
+                                                                  inAddressBar: false))
+    }
+
+    /// 地址栏状态下的 page 交给原逻辑：进出地址栏是真实变化
+    func testPageInsideAddressBarStillEvaluates() {
+        XCTAssertFalse(InputSourceService.keepsSourceOutsideField(BrowserContext(kind: .page),
+                                                                  inAddressBar: true))
+    }
+
     // MARK: - 辅助
 
     private func makeDirectory() throws -> URL {

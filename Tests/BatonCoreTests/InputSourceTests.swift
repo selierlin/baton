@@ -942,4 +942,61 @@ final class InputSourceServiceTests: XCTestCase {
         XCTAssertEqual(service.learnCandidates.count, 1)
         XCTAssertEqual(service.learnCandidates.first?.sourceID, "com.sogou.pinyin")
     }
+
+    // MARK: - 补切判定
+
+    /// 切完 250ms 被系统 / 输入法弹回，场景没变、用户没动手：补切一次
+    func testRetriesWhenSourceWasBouncedBack() {
+        XCTAssertTrue(InputSourceService.shouldRetry(
+            after: "com.apple.keylayout.ABC",
+            target: "com.bytedance.inputmethod.doubaoime.pinyin",
+            scene: "com.tencent.xinWeChat|-|false",
+            currentScene: "com.tencent.xinWeChat|-|false",
+            enabled: true,
+            userOverride: false))
+    }
+
+    /// 目标已经生效，没什么可补的
+    func testNoRetryWhenTargetAlreadyActive() {
+        XCTAssertFalse(InputSourceService.shouldRetry(
+            after: "com.bytedance.inputmethod.doubaoime.pinyin",
+            target: "com.bytedance.inputmethod.doubaoime.pinyin",
+            scene: "com.tencent.xinWeChat|-|false",
+            currentScene: "com.tencent.xinWeChat|-|false",
+            enabled: true,
+            userOverride: false))
+    }
+
+    /// 场景变了（换 App、换输入框、进出地址栏），源跟着变是应该的，别抢回来
+    func testNoRetryAfterSceneChanged() {
+        XCTAssertFalse(InputSourceService.shouldRetry(
+            after: "com.apple.keylayout.ABC",
+            target: "com.bytedance.inputmethod.doubaoime.pinyin",
+            scene: "com.google.Chrome|-|false",
+            currentScene: "com.google.Chrome|搜索|false",
+            enabled: true,
+            userOverride: false))
+    }
+
+    /// 用户自己换过源，尊重他的选择
+    func testNoRetryWhenUserTookOver() {
+        XCTAssertFalse(InputSourceService.shouldRetry(
+            after: "com.apple.keylayout.ABC",
+            target: "com.bytedance.inputmethod.doubaoime.pinyin",
+            scene: "com.tencent.xinWeChat|-|false",
+            currentScene: "com.tencent.xinWeChat|-|false",
+            enabled: true,
+            userOverride: true))
+    }
+
+    /// 关掉自动切换后不再补切
+    func testNoRetryWhenDisabled() {
+        XCTAssertFalse(InputSourceService.shouldRetry(
+            after: "com.apple.keylayout.ABC",
+            target: "com.bytedance.inputmethod.doubaoime.pinyin",
+            scene: "com.tencent.xinWeChat|-|false",
+            currentScene: "com.tencent.xinWeChat|-|false",
+            enabled: false,
+            userOverride: false))
+    }
 }

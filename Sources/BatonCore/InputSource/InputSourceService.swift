@@ -35,6 +35,10 @@ public final class InputSourceService {
     /// 上一次「我们自己换的源」。换源通知分不清是谁换的，靠它把 Baton 自己的动作排掉，
     /// 否则进输入框时自动切的那一下会被当成用户偏好学进去
     private var lastSelfSwitchAt: Date?
+    /// 上一次我们想切到哪个源。切换后的通知到达时源已经不是它，说明被弹回了
+    private var lastSelfTarget: String?
+    /// 我们切完之后、源被别人改掉的时刻。用来区分「系统弹回」和「用户自己换回来」
+    private var lastExternalOverrideAt: Date?
     /// 同一条学习记录 1 秒内只算一次：Chrome 换源偶尔连发两条通知，
     /// 不去重的话一次手动切换就能直接攒满建出规则
     private var lastLearned: (id: String, at: Date)?
@@ -45,6 +49,9 @@ public final class InputSourceService {
     private let learnQueue = DispatchQueue(label: "com.selier.baton.site-learn", qos: .utility)
     /// 当前系统里能选、已启用的源 ID。缓存起来，UI 每次刷新不必重新问 TIS
     private var installedIDs: Set<String> = []
+    /// 每次切换 +1。延迟回读只在「还是同一次切换」时才作数，
+    /// 否则连续切两次时，前一次的回读会在第二次已经切完之后误报失败。
+    private var switchSerial = 0
 
     /// 配置里引用了、但系统里现在找不到的源。换输入法后旧配置会落到这里
     public private(set) var missingSources: [MissingSource] = []
@@ -556,6 +563,19 @@ public final class InputSourceService {
         return key == lastFieldKey
     }
 
+    /// 焦点在网页正文、或根本读不到焦点时，不据此改源。
+    ///
+    /// Chrome 在输入框里打字、DOM 刷新、滚动时会短暂读不到焦点元素，轮询报一次
+    /// page / unknown 就按 App 记忆切回默认源，紧接着回到输入框又切回来。
+    /// 实测同一个输入框上 1 秒内来回切三次（2026-11-17 诊断日志）。
+    /// 离开输入框本身不该是切源的理由 —— 真正换 App 由 handleFrontApp 负责。
+    ///
+    /// 地址栏里不走这条：进出地址栏是真实变化，且要保证记忆不被地址栏的源污染。
+    static func keepsSourceOutsideField(_ context: BrowserContext, inAddressBar: Bool) -> Bool {
+        guard !inAddressBar else { return false }
+        return context.kind == .page || context.kind == .unknown
+    }
+
     /// 焦点上下文变了：进/出地址栏、点到某个输入框、切到一个网站或 App。
     ///
     /// 只在「上下文变了」时动一次，不做持续强切：用户可能为了搜中文内容手动换回中文，
@@ -572,9 +592,20 @@ public final class InputSourceService {
 
         let inBar = context.kind == .addressBar
 
+        if Self.keepsSourceOutsideField(context, inAddressBar: inAddressBar) {
+            // 网页正文 / 读不到焦点：不动源，也不动 inAddressBar / suppressMemory，
+            // 免得切走 App 时把地址栏或网站规则定下的源写进记忆
+            ActionLog.state("input.ctx.keep", "kind=\(context.kind) 不干预")
+            return
+        }
+
         if Self.keepsCurrentSource(context: context,
                                    suppressMemory: suppressMemory,
                                    lastFieldKey: lastFieldKey) {
+            // 同一块框里文案消失（placeholder 打完字就不见了）时保持现状。
+            // 记一笔，免得事后看不出「这次为什么没切」
+            ActionLog.state("input.ctx.keep",
+                            "kind=\(context.kind) field=\(String((context.fieldKey ?? "-").prefix(24)))")
             return
         }
         lastFieldKey = context.fieldKey
@@ -641,14 +672,91 @@ public final class InputSourceService {
         }
     }
 
-    private func select(_ target: String, appName: String) {
-        ActionLog.state("input.switch", "\(catalog.currentID ?? "-") -> \(target) (\(appName))")
+    private func select(_ target: String, appName: String, retrying: Bool = false) {
         // 通知分不清是谁换的源，先登记一下，紧接着到达的那条通知就不算用户意图
         lastSelfSwitchAt = Date()
-        if catalog.select(id: target) {
+        lastSelfTarget = target
+        lastExternalOverrideAt = nil
+        let outcome = catalog.select(id: target)
+        ActionLog.state("input.switch",
+                        "\(outcome.before ?? "-") -> \(target) (\(appName)) "
+                        + "status=\(outcome.status) now=\(outcome.after ?? "-") "
+                        + "ok=\(outcome.changed)")
+        if outcome.accepted {
             log.debug("切到 \(target, privacy: .public)（\(appName, privacy: .public)）")
         } else {
-            log.error("切换输入源失败：\(target, privacy: .public)")
+            log.error("切换输入源失败：\(target, privacy: .public) status=\(outcome.status)")
+        }
+        switchSerial &+= 1
+        settle(target: target, appName: appName, serial: switchSerial,
+               scene: sceneToken, canRetry: !retrying)
+    }
+
+    /// 触发这次切换的场景快照：换了 App、换了输入框、进出地址栏都算场景变了。
+    /// 对账时「源变了」是弹回还是场景该变，靠它区分。
+    private var sceneToken: String {
+        "\(lastKey ?? "-")|\(lastFieldKey ?? "-")|\(inAddressBar)"
+    }
+
+    /// 切换没落位时要不要补切一次。
+    ///
+    /// 补切只针对「系统 / 第三方输入法把源弹回」：几十毫秒内被改回去，用户来不及动手。
+    /// 场景已经变了（换 App、换输入框）或用户自己换过源，都不该抢回来。
+    /// `internal` 是为了直接测判定条件，不用真的去动系统输入源。
+    static func shouldRetry(after observed: String?,
+                            target: String,
+                            scene: String,
+                            currentScene: String,
+                            enabled: Bool,
+                            userOverride: Bool) -> Bool {
+        guard enabled, observed != target, scene == currentScene else { return false }
+        return !userOverride
+    }
+
+    /// 用户是不是在我们切完之后自己动过手。切换后 200ms 以内的改动算系统弹回，
+    /// 更慢的多半是用户按了 ⌃Space。
+    private var userOverrideSinceLastSwitch: Bool {
+        guard let changed = lastExternalOverrideAt, let switched = lastSelfSwitchAt else { return false }
+        return changed.timeIntervalSince(switched) > 0.2
+    }
+
+    /// 切换后隔一会再对一次账。
+    ///
+    /// 豆包这类第三方输入法不是同步接管的：`TISSelectInputSource` 返回 noErr 时
+    /// 系统可能还停在旧源上，过一两百毫秒才生效。只有把「切完立刻读」和
+    /// 「等一会再读」分开记，才能分清是「请求被吞了」还是「切过去又被弹回来」。
+    private func settle(target: String, appName: String, serial: Int,
+                        scene: String, canRetry: Bool) {
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            // 这期间又切了一次源：两次回读都不算数，等新的那次自己报
+            guard let self, self.switchSerial == serial else { return }
+            let first = self.catalog.currentID
+            if first != target {
+                ActionLog.fail("input.switch.unsettled",
+                               "target=\(target) after250ms=\(first ?? "-") app=\(appName)")
+                // 被弹回了。场景没变、用户也没自己换源，就补切一次——
+                // 用户此刻正等着打字，不补的话就是「明明切了还是英文」。
+                // 只补一次，补完再失败就只记日志，免得和输入法对着抢。
+                if self.catalog.contains(id: target),
+                   Self.shouldRetry(after: first, target: target,
+                                    scene: scene, currentScene: self.sceneToken,
+                                    enabled: self.settings.enabled,
+                                    userOverride: self.userOverrideSinceLastSwitch) {
+                    ActionLog.state("input.switch.retry",
+                                    "target=\(target) from=\(first ?? "-") app=\(appName)")
+                    self.select(target, appName: appName, retrying: true)
+                }
+                return
+            }
+            try? await Task.sleep(nanoseconds: 750_000_000)
+            guard self.switchSerial == serial else { return }
+            let second = self.catalog.currentID
+            if second != target {
+                // 一秒后才被弹回，多半是用户已经换到别的场景动手了，不补切
+                ActionLog.fail("input.switch.reverted",
+                               "target=\(target) after1s=\(second ?? "-") app=\(appName)")
+            }
         }
     }
 
@@ -658,8 +766,22 @@ public final class InputSourceService {
     /// 那时拿 `currentID` 比会认成「用户切了」，把切换前的旧源当成偏好学进去。
     private func handleSelectedSourceChanged() {
         if let lastSelfSwitchAt, Date().timeIntervalSince(lastSelfSwitchAt) < 0.6 {
+            // 我们自己刚切的，忽略学习；记一笔是为了确认通知确实到了、
+            // 以及通知到达那一刻系统认为的当前源是什么（排查「切了却没生效」用）。
+            // expected / since 一起记：current 和 expected 不一致，就说明这次通知
+            // 不是对我们那次切换的回执，而是别人把源改掉了；since 用来分清是系统弹回还是用户自己切
+            let current = catalog.currentID
+            let since = Int(Date().timeIntervalSince(lastSelfSwitchAt) * 1000)
+            ActionLog.state("input.notify.self",
+                            "current=\(current ?? "-") expected=\(lastSelfTarget ?? "-") since=\(since)ms")
+            if let expected = lastSelfTarget, current != expected {
+                lastExternalOverrideAt = Date()
+            }
             return
         }
+        // 到这里就是我们自己没切、却变了源：用户按了 ⌃Space / 点菜单，
+        // 或者第三方输入法自己改了状态。排查「怎么又变英文了」时这条最有用
+        ActionLog.state("input.notify", "current=\(catalog.currentID ?? "-")")
         rememberCurrentSource()
         learnFromField()
     }

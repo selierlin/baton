@@ -51,12 +51,36 @@ public final class InputSourceCatalog {
         }
     }
 
-    /// 按 ID 切换。找不到或已经在该源上时不报错，返回是否真的发生了切换。
+    /// 一次切换的结果。
+    ///
+    /// `TISSelectInputSource` 返回 noErr 只代表请求被接受——第三方输入法（豆包这类）
+    /// 在 App 刚激活、输入上下文没就绪时会出现「接受但不生效」。所以把调用前后
+    /// 读到的当前源一起带出来，调用方才能判断到底切没切过去。
+    public struct SelectOutcome: Sendable, Equatable {
+        public let target: String
+        public let before: String?
+        /// 调用返回后立刻读到的源。异步生效时会仍然等于 `before`。
+        public let after: String?
+        public let status: OSStatus
+
+        /// 系统接受了请求（不等于已经切过去）。
+        public var accepted: Bool { status == noErr }
+        /// 请求返回时已经切到目标源。
+        public var changed: Bool { after == target }
+    }
+
+    /// 按 ID 切换。找不到或已经在该源上时不报错，结果里能看出是哪一种。
     @discardableResult
-    public func select(id: String) -> Bool {
-        guard id != currentID else { return false }
-        guard let source = source(withID: id) else { return false }
-        return TISSelectInputSource(source) == noErr
+    public func select(id: String) -> SelectOutcome {
+        let before = currentID
+        guard id != before else {
+            return SelectOutcome(target: id, before: before, after: before, status: noErr)
+        }
+        guard let source = source(withID: id) else {
+            return SelectOutcome(target: id, before: before, after: before, status: OSStatus(paramErr))
+        }
+        let status = TISSelectInputSource(source)
+        return SelectOutcome(target: id, before: before, after: currentID, status: status)
     }
 
     public func contains(id: String) -> Bool {
