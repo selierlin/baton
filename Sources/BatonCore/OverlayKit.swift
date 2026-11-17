@@ -37,6 +37,9 @@ public final class OverlayController {
     private var views: [CGDirectDisplayID: OverlayView] = [:]
     private var activeDisplayID: CGDirectDisplayID?
     private var continuation: CheckedContinuation<CaptureSelection?, Never>?
+    /// 会话在有人 await 之前就结束了（固定选区），结果先存这儿
+    private var earlyFinish: EarlyFinish?
+    private struct EarlyFinish { let selection: CaptureSelection? }
     private var timeoutTask: Task<Void, Never>?
     private let mainScreenHeight: CGFloat
     /// 框选结束后把覆盖层留在屏幕上，供原地编辑/长截图接管。
@@ -64,57 +67,94 @@ public final class OverlayController {
                        initialSelection: CaptureSelection? = nil,
                        timeout: Duration = .seconds(300)) async -> CaptureSelection? {
         guard !frames.isEmpty else { return nil }
+        present(displays: frames.map(\.display),
+                mode: mode,
+                probe: probe,
+                keepsSelection: keepsSelection,
+                initialSelection: initialSelection)
+        fill(frames)
+        return await awaitSelection(timeout: timeout)
+    }
 
+    /// 第一阶段：只按屏幕几何铺窗，**不等冻结帧**。
+    ///
+    /// 抓帧要几十毫秒（多屏更多），以前是先抓完才建窗，那段时间屏幕上什么都没变，
+    /// 用户已经开始拖了。现在窗口先立起来——没有冻结帧时窗口是全透明的，
+    /// 画面看起来还是原样，图到了再由 `fill(_:)` 一次性上屏压暗。
+    /// - Returns: 窗口是否立起来了。
+    @discardableResult
+    public func present(displays: [DisplayFrame],
+                        mode: OverlayMode = .area,
+                        probe: PickProbe? = nil,
+                        keepsSelection: Bool = false,
+                        initialSelection: CaptureSelection? = nil) -> Bool {
+        guard !displays.isEmpty else { return false }
+
+        // 上一场会话若还停着（比如编辑态又按了截图热键），先收干净再开新场
+        if !windows.isEmpty {
+            let previous = continuation
+            continuation = nil
+            teardown()
+            previous?.resume(returning: nil)
+        }
+        earlyFinish = nil
+        retainsSelection = keepsSelection
+        views.removeAll()
+        OverlayRecovery.beginSession()
+        ActionLog.action("overlay.present", "displays=\(displays.count) keeps=\(keepsSelection)")
+
+        for display in displays {
+            let (window, view) = makeWindow(for: display, image: nil, mode: mode, probe: probe)
+            view.retainsSelection = keepsSelection
+            view.onFinish = { [weak self] selection in
+                self?.finish(selection)
+            }
+            window.orderFrontRegardless()
+            windows.append(window)
+            views[display.displayID] = view
+        }
+
+        windows.first?.makeKey()
+        NSApp.activate(ignoringOtherApps: true)
+        windows.first?.makeKey()
+        // 多屏排查：每块屏一层窗，位置和层级都要对得上，否则「看得见却选不中」
+        for window in windows {
+            let f = window.frame
+            ActionLog.action("overlay.window",
+                             "num=\(window.windowNumber) frame=\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))x\(Int(f.height)) level=\(window.level.rawValue) ignores=\(window.ignoresMouseEvents)")
+        }
+        ActionLog.action("overlay.key",
+                         "num=\(windows.first?.windowNumber ?? -1) active=\(NSApp.isActive)")
+
+        // 建窗之后立刻接管「已经按下的这次拖拽」。铺得越早，能接住的越完整。
+        if initialSelection == nil {
+            adoptOngoingDragIfNeeded()
+        }
+
+        // 固定选区（上次区域 / 联调探针）：直接锁住并交出舞台
+        if let initialSelection {
+            views[initialSelection.display.displayID]?.lockSelection(initialSelection.globalRect)
+            finish(initialSelection)
+        }
+        return true
+    }
+
+    /// 第二阶段：冻结帧到位，按屏填图。可以分多次调（比如先填光标屏、再补其它屏）。
+    public func fill(_ frames: [CapturedFrame]) {
+        for frame in frames {
+            views[frame.display.displayID]?.setImage(frame.image)
+        }
+    }
+
+    /// 第三阶段：等用户框完（或超时/取消）。
+    public func awaitSelection(timeout: Duration = .seconds(300)) async -> CaptureSelection? {
+        // 固定选区在 `present` 里就结束了，人还没 wait，结果先记着
+        if let earlyFinish {
+            self.earlyFinish = nil
+            return earlyFinish.selection
+        }
         return await withCheckedContinuation { continuation in
-            // 上一场会话若还停着（比如编辑态又按了截图热键），先收干净再开新场
-            if !windows.isEmpty {
-                let previous = self.continuation
-                self.continuation = nil
-                teardown()
-                previous?.resume(returning: nil)
-            }
             self.continuation = continuation
-            self.retainsSelection = keepsSelection
-            self.views.removeAll()
-            OverlayRecovery.beginSession()
-            ActionLog.action("overlay.present", "displays=\(frames.count) keeps=\(keepsSelection)")
-
-            for frame in frames {
-                let (window, view) = makeWindow(for: frame, mode: mode, probe: probe)
-                view.retainsSelection = keepsSelection
-                view.onFinish = { [weak self] selection in
-                    self?.finish(selection)
-                }
-                window.orderFrontRegardless()
-                windows.append(window)
-                views[frame.display.displayID] = view
-            }
-
-            windows.first?.makeKey()
-            NSApp.activate(ignoringOtherApps: true)
-            windows.first?.makeKey()
-            // 多屏排查：每块屏一层窗，位置和层级都要对得上，否则「看得见却选不中」
-            for window in windows {
-                let f = window.frame
-                ActionLog.action("overlay.window",
-                                 "num=\(window.windowNumber) frame=\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))x\(Int(f.height)) level=\(window.level.rawValue) ignores=\(window.ignoresMouseEvents)")
-            }
-            ActionLog.action("overlay.key",
-                             "num=\(windows.first?.windowNumber ?? -1) active=\(NSApp.isActive)")
-
-            // 抓帧那 100–300ms 里用户可能已经开始拖了，那一下的 mouseDown 落在别的 App 上，
-            // 后续 dragged/up 也不会回到我们这里，不接住的话就是「框了等于没框」
-            if initialSelection == nil {
-                adoptOngoingDragIfNeeded()
-            }
-
-            // 固定选区（上次区域 / 联调探针）：直接锁住并交出舞台
-            if let initialSelection {
-                views[initialSelection.display.displayID]?.lockSelection(initialSelection.globalRect)
-                finish(initialSelection)
-                return
-            }
-
             timeoutTask = Task { [weak self] in
                 try? await Task.sleep(for: timeout)
                 guard !Task.isCancelled else { return }
@@ -143,7 +183,8 @@ public final class OverlayController {
 
         var hosts: [NSView] = []
         for frame in frames {
-            let (window, view) = makeWindow(for: frame, mode: .bare, probe: nil)
+            let (window, view) = makeWindow(for: frame.display, image: frame.image,
+                                            mode: .bare, probe: nil)
             window.orderFrontRegardless()
             windows.append(window)
             views[frame.display.displayID] = view
@@ -160,13 +201,14 @@ public final class OverlayController {
         views[displayID]
     }
 
-    private func makeWindow(for frame: CapturedFrame, mode: OverlayMode,
+    private func makeWindow(for display: DisplayFrame, image: CGImage?, mode: OverlayMode,
                             probe: PickProbe?) -> (OverlayWindow, OverlayView) {
-        let cocoaRect = CaptureGeometry.cocoaRect(fromGlobal: frame.display.screenFrame,
+        let cocoaRect = CaptureGeometry.cocoaRect(fromGlobal: display.screenFrame,
                                                   mainScreenHeight: mainScreenHeight)
         let window = OverlayWindow(contentRect: cocoaRect)
         let view = OverlayView(frame: CGRect(origin: .zero, size: cocoaRect.size),
-                               captured: frame,
+                               display: display,
+                               image: image,
                                mainScreenHeight: mainScreenHeight,
                                mode: mode,
                                probe: probe)
@@ -239,11 +281,13 @@ public final class OverlayController {
             }
             // 多屏时 key window 可能停在别的屏，编辑器就收不到键盘
             views[selection.display.displayID]?.window?.makeKey()
+            if continuation == nil { earlyFinish = EarlyFinish(selection: selection) }
             resume(continuation, with: selection)
             return
         }
 
         teardown()
+        if continuation == nil { earlyFinish = EarlyFinish(selection: selection) }
         resume(continuation, with: selection)
     }
 
@@ -256,6 +300,7 @@ public final class OverlayController {
     public func dismiss() {
         timeoutTask?.cancel()
         timeoutTask = nil
+        earlyFinish = nil
         retainsSelection = false
         activeDisplayID = nil
         teardown()
@@ -349,7 +394,11 @@ final class OverlayWindow: NSWindow {
 }
 
 final class OverlayView: NSView {
-    private let captured: CapturedFrame
+    /// 这块屏的几何。窗先铺、图后到时只有它，没有位图。
+    private let display: DisplayFrame
+    /// 冻结帧。先铺窗后抓帧的那几十毫秒里是 nil，窗口保持透明——屏幕上看起来还是原样，
+    /// 等图到了再一起变暗，比「先黑一下再出图」自然得多。
+    private var image: CGImage?
     private let mainScreenHeight: CGFloat
     private let mode: OverlayMode
     private let probe: PickProbe?
@@ -458,11 +507,13 @@ final class OverlayView: NSView {
     var onFinish: ((CaptureSelection?) -> Void)?
 
     init(frame: CGRect,
-         captured: CapturedFrame,
+         display: DisplayFrame,
+         image: CGImage?,
          mainScreenHeight: CGFloat,
          mode: OverlayMode,
          probe: PickProbe?) {
-        self.captured = captured
+        self.display = display
+        self.image = image
         self.mainScreenHeight = mainScreenHeight
         self.mode = mode
         self.probe = probe
@@ -473,7 +524,7 @@ final class OverlayView: NSView {
 
         // 冻结帧直接进 contents，不经过 NSImageView（会多一份 backing store）
         imageLayer.frame = bounds
-        imageLayer.contents = captured.image
+        imageLayer.contents = image
         imageLayer.contentsGravity = .resize
         imageLayer.magnificationFilter = .nearest
         layer?.addSublayer(imageLayer)
@@ -483,7 +534,8 @@ final class OverlayView: NSView {
         dimLayer.fillColor = NSColor.black.withAlphaComponent(0.30).cgColor
         dimLayer.fillRule = .evenOdd
         // 尺子看的是原始画面：压暗会让取色和对比度都不准
-        dimLayer.isHidden = mode == .bare
+        // 图还没到也不压暗，否则就是「按下去屏幕先黑一下」
+        dimLayer.isHidden = mode == .bare || image == nil
         layer?.addSublayer(dimLayer)
 
         borderLayer.frame = bounds
@@ -522,7 +574,7 @@ final class OverlayView: NSView {
         magnifier.addSublayer(magnifierContent)
 
         magnifierGrid.backgroundColor = Self.gridPattern(cell: cell,
-                                                         scale: captured.display.nativeScale).cgColor
+                                                         scale: display.nativeScale).cgColor
         magnifierGrid.frame = magnifierContent.bounds
         magnifierContent.addSublayer(magnifierGrid)
 
@@ -583,6 +635,22 @@ final class OverlayView: NSView {
         // 用户点完热键到第一次按下鼠标之间屏幕毫无变化，根本不像进了截图态。
         updateSelectionLayers()
     }
+
+    /// 冻结帧到位：上屏 + 压暗。先铺窗后抓帧时由控制器调用。
+    func setImage(_ image: CGImage) {
+        guard self.image == nil else { return }
+        self.image = image
+        // 不加隐式动画：这里要的是「一帧之内就换掉」，淡入反而像卡了一下
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        imageLayer.contents = image
+        CATransaction.commit()
+        if mode != .bare { dimLayer.isHidden = false }
+        updateSelectionLayers()
+    }
+
+    /// 图到了没有。图没到时缩放/取色/放大镜都没有意义。
+    var hasImage: Bool { image != nil }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
@@ -756,7 +824,7 @@ final class OverlayView: NSView {
     /// 每次都拿起手时的 `origin` 重算，避免浮条重排、尺寸被钳制之后误差累积。
     private func resizeOutsideDrag(_ anchor: SelectionAnchor, origin: CGRect, to point: CGPoint) {
         let target = SelectionGeometry.resized(origin, anchor: anchor, to: point,
-                                               limit: captured.display.screenFrame)
+                                               limit: display.screenFrame)
         if target != lockedSelection { onSelectionResize?(target) }
     }
 
@@ -871,7 +939,7 @@ final class OverlayView: NSView {
     override func mouseDown(with event: NSEvent) {
         adoptKeyIfNeeded()
         ActionLog.action("overlay.down",
-                         "win=\(window?.windowNumber ?? -1) display=\(captured.display.displayID) mode=\(String(describing: mode)) locked=\(lockedSelection != nil)")
+                         "win=\(window?.windowNumber ?? -1) display=\(display.displayID) mode=\(String(describing: mode)) locked=\(lockedSelection != nil)")
         // 编辑态：选区已锁定，画布自己收事件，遮罩上的点击不重开框选
         if lockedSelection != nil {
             // 框外按下 = 把那条边挪到指针上。Longshot 是点一下就扩（不必按住拖），
@@ -890,7 +958,7 @@ final class OverlayView: NSView {
             updateHover(at: globalPoint(for: event))
             if let rect = hoverRect {
                 onFinish?(CaptureSelection(globalRect: rect,
-                                           display: captured.display,
+                                           display: display,
                                            windowID: hoverWindowID))
             }
             return
@@ -976,7 +1044,7 @@ final class OverlayView: NSView {
             lockedSelection = rect
             window?.invalidateCursorRects(for: self)
         }
-        onFinish?(CaptureSelection(globalRect: rect, display: captured.display))
+        onFinish?(CaptureSelection(globalRect: rect, display: display))
     }
 
     // MARK: - 接管铺开前就按下的拖拽
@@ -1039,7 +1107,7 @@ final class OverlayView: NSView {
         lastProbeAt = CFAbsoluteTimeGetCurrent()
         lastProbePoint = point
 
-        guard let target = probe?(point, captured.display, pickKind) else {
+        guard let target = probe?(point, display, pickKind) else {
             if hoverRect != nil {
                 clearHover()
                 updateSelectionLayers()
@@ -1163,8 +1231,8 @@ final class OverlayView: NSView {
     /// F：整块屏当选区，直接交出去。
     private func selectFullScreen() {
         guard mode == .area, lockedSelection == nil else { return }
-        ActionLog.action("overlay.fullScreen", "display=\(captured.display.displayID)")
-        commit(captured.display.screenFrame, windowID: nil)
+        ActionLog.action("overlay.fullScreen", "display=\(display.displayID)")
+        commit(display.screenFrame, windowID: nil)
     }
 
     /// ↩：把当前悬停目标定下来。鼠标一直没动时先按位置探一次。
@@ -1194,7 +1262,7 @@ final class OverlayView: NSView {
         }
         updateSelectionLayers()
         onFinish?(CaptureSelection(globalRect: rect,
-                                   display: captured.display,
+                                   display: display,
                                    windowID: windowID))
     }
 
@@ -1305,15 +1373,15 @@ final class OverlayView: NSView {
     }
 
     /// 冻结帧一个视图点对应多少位图像素（降采样抓图时小于 nativeScale）。
-    private var imageScale: (x: CGFloat, y: CGFloat) {
-        let image = captured.image
+    /// 图还没到时为空：放大镜 / 取色这时候都没有可读的内容。
+    private var imageScale: (x: CGFloat, y: CGFloat)? {
+        guard let image else { return nil }
         return (CGFloat(image.width) / bounds.width, CGFloat(image.height) / bounds.height)
     }
 
     /// 从冻结帧里裁出光标周围 15pt 见方的一块（2x 屏 = 30 个设备像素）。
     private func magnifierCrop(around point: CGPoint) -> CGImage? {
-        let image = captured.image
-        let scale = imageScale
+        guard let image, let scale = imageScale else { return nil }
         let count = Self.magnifierCells
         let half = (count - 1) / 2
 
@@ -1366,8 +1434,7 @@ final class OverlayView: NSView {
 
     /// 取冻结帧里某个像素的 sRGB 颜色（1×1 重绘，比把整张位图读进内存便宜得多）。
     private func pixelColor(at point: CGPoint) -> NSColor? {
-        let image = captured.image
-        let scale = imageScale
+        guard let image, let scale = imageScale else { return nil }
         let px = Int(point.x * scale.x)
         let py = Int((bounds.maxY - point.y) * scale.y)
         guard px >= 0, px < image.width, py >= 0, py < image.height,

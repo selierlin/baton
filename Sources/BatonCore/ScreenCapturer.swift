@@ -36,21 +36,16 @@ public final class RegionCaptureSession: @unchecked Sendable {
     private let filter: SCContentFilter
     private let config: SCStreamConfiguration
 
-    public init(rect: CGRect, display: DisplayFrame) async throws {
+    /// - Parameter pins: 要留在画面里的贴图窗口号。长截图逐帧抓的时候覆盖层还在，
+    ///   必须把它排除；但贴图不能跟着一起消失，否则拼出来的图里贴图是空的。
+    public init(rect: CGRect, display: DisplayFrame,
+                pins: Set<CGWindowID> = []) async throws {
         guard CGPreflightScreenCaptureAccess() else {
             throw CaptureFailure.screenRecordingDenied
         }
-        let content: SCShareableContent
-        do {
-            content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-        } catch {
-            throw CaptureFailure.captureFailed(error.localizedDescription)
-        }
+        let content = try await ScreenCapturer.sharedContent(keepingPins: pins)
         guard let target = content.displays.first(where: { $0.displayID == display.displayID }) else {
             throw CaptureFailure.noDisplays
-        }
-        let selfApp = content.applications.first {
-            $0.processID == ProcessInfo.processInfo.processIdentifier
         }
         // SCK 的 sourceRect 是「相对该屏左上角的点」，全局坐标直接减屏幕原点
         let local = CGRect(x: rect.minX - target.frame.minX,
@@ -58,8 +53,8 @@ public final class RegionCaptureSession: @unchecked Sendable {
                            width: rect.width,
                            height: rect.height)
         filter = SCContentFilter(display: target,
-                                 excludingApplications: selfApp.map { [$0] } ?? [],
-                                 exceptingWindows: [])
+                                 excludingApplications: ScreenCapturer.selfApplications(in: content),
+                                 exceptingWindows: ScreenCapturer.pinWindows(in: content, keeping: pins))
         let scale = CGFloat(filter.pointPixelScale)
 
         config = SCStreamConfiguration()
@@ -120,34 +115,124 @@ public enum ScreenCapturer {
 
     /// 单次抓帧用这个即可；连续抓同一区域（长截图）请用 `RegionCaptureSession`，
     /// 它省掉每帧重新枚举 SCK 内容源的开销。
-    public static func capture(rect: CGRect, display: DisplayFrame) async throws -> CGImage {
-        let session = try await RegionCaptureSession(rect: rect, display: display)
+    public static func capture(rect: CGRect, display: DisplayFrame,
+                               pins: Set<CGWindowID> = []) async throws -> CGImage {
+        let session = try await RegionCaptureSession(rect: rect, display: display, pins: pins)
         return try await session.capture()
     }
 
-    /// 抓所有屏。非光标屏按 `nonCursorDownsample` 降采样（面积按平方缩小）。
+    // MARK: - 内容源缓存
+
+    /// 缓存 `SCShareableContent`：枚举一次实测 26ms，热键路径上每次都付一遍，
+    /// 就是「按下去到屏幕有反应」里最贵的那一段。
+    ///
+    /// 只缓存显示器和「自己这个 App」，**不依赖窗口列表**——排除自己走的是
+    /// `excludingApplications`，后开的窗口（覆盖层、设置、剪贴板面板）不需要重新枚举
+    /// 也会被排掉。这一条是「先铺覆盖层、后填冻结帧」成立的前提：铺窗发生在抓帧之后
+    /// 也能被正确排除。
+    ///
+    /// 显示器插拔 / 改分辨率会失效，见 `cachedContentIsValid`（校验代价是微秒级）。
+    private static let contentCache = ContentCache()
+    private final class ContentCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var content: SCShareableContent?
+
+        func get() -> SCShareableContent? {
+            lock.lock()
+            defer { lock.unlock() }
+            return content
+        }
+
+        func set(_ value: SCShareableContent?) {
+            lock.lock()
+            content = value
+            lock.unlock()
+        }
+    }
+
+    static func invalidateContentCache() {
+        contentCache.set(nil)
+    }
+
+    /// 取内容源。带贴图时不吃缓存：贴图窗口是后开的，缓存的窗口列表里没有它，
+    /// `exceptingWindows` 就找不到对应的 `SCWindow`，贴图又会被排掉。
+    static func sharedContent(keepingPins pins: Set<CGWindowID>) async throws -> SCShareableContent {
+        if pins.isEmpty {
+            if let hit = contentCache.get(), cachedContentIsValid(hit) { return hit }
+        }
+        let fresh: SCShareableContent
+        do {
+            fresh = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+        } catch {
+            throw CaptureFailure.captureFailed(error.localizedDescription)
+        }
+        contentCache.set(fresh)
+        return fresh
+    }
+
+    /// 缓存里的显示器还和现在一致吗。插拔、改分辨率、投影切换都会让它变。
+    static func cachedContentIsValid(_ content: SCShareableContent) -> Bool {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 16)
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(16, &ids, &count) == .success,
+              Int(count) == content.displays.count else { return false }
+        for display in content.displays {
+            guard ids.contains(display.displayID),
+                  CGDisplayBounds(display.displayID) == display.frame else { return false }
+        }
+        return true
+    }
+
+    /// 自己这个 App。排除自己只排 App，不排窗口：贴图窗口的 owner 也是我们，
+    /// 但它是靠 `exceptingWindows` 单独留在画面里的。
+    static func selfApplications(in content: SCShareableContent) -> [SCRunningApplication] {
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        return content.applications.filter { $0.processID == ownPID }
+    }
+
+    /// 要留在画面里的贴图窗口。只有带贴图时才需要枚举窗口列表。
+    static func pinWindows(in content: SCShareableContent,
+                           keeping kept: Set<CGWindowID>) -> [SCWindow] {
+        guard !kept.isEmpty else { return [] }
+        return content.windows.filter { kept.contains($0.windowID) }
+    }
+
+    /// 只取屏幕几何，不抓帧。给「先铺覆盖层、后填冻结帧」用：
+    /// 铺窗只要矩形和倍率，这两样 `NSScreen` 立刻就有。
+    public static func displays() -> [DisplayFrame] {
+        NSScreen.screens.compactMap { screen in
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
+                as? NSNumber else { return nil }
+            let displayID = number.uint32Value
+            // 覆盖层用的是 CG 全局坐标（左上原点），和 SCDisplay.frame 同一套
+            let frame = CGDisplayBounds(displayID)
+            guard frame.width > 0, frame.height > 0 else { return nil }
+            let scale = screen.backingScaleFactor
+            return DisplayFrame(displayID: displayID,
+                                screenFrame: frame,
+                                pixelSize: CGSize(width: frame.width * scale, height: frame.height * scale),
+                                nativeScale: scale)
+        }
+    }
+
+    /// 抓所有屏。
     ///
     /// 为什么全部抓：覆盖窗建在所有屏并集上，缺一块屏就会在那一屏画出黑底。
-    public static func captureAll(nonCursorDownsample: CGFloat = 0.5) async throws -> [CapturedFrame] {
+    /// 非光标屏也不降采样：框选可能落在任意一块屏上，降了就是那块屏的截图掉一半像素。
+    public static func captureAll(keepingPins pins: Set<CGWindowID> = []) async throws -> [CapturedFrame] {
         guard CGPreflightScreenCaptureAccess() else {
             throw CaptureFailure.screenRecordingDenied
         }
 
-        let content: SCShareableContent
-        do {
-            content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-        } catch {
-            throw CaptureFailure.captureFailed(error.localizedDescription)
-        }
+        let content = try await sharedContent(keepingPins: pins)
         guard !content.displays.isEmpty else { throw CaptureFailure.noDisplays }
 
-        let selfApp = content.applications.first {
-            $0.processID == ProcessInfo.processInfo.processIdentifier
-        }
+        let own = selfApplications(in: content)
+        let kept = pinWindows(in: content, keeping: pins)
         // 串行抓两块屏时，第二块要等第一块抓完：实测按热键到覆盖层铺开 215ms，
         // 单屏只要 11ms。用户按下就拖，前 200ms 的拖拽全落在别的 App 上，
         // 覆盖层铺开后看起来「框了没反应」，只好再框一次。改成并发抓。
-        let jobs = content.displays.map { DisplayJob(display: $0, selfApp: selfApp) }
+        let jobs = content.displays.map { DisplayJob(display: $0, excludedApps: own, kept: kept) }
         var frames: [CapturedFrame] = []
         try await withThrowingTaskGroup(of: CapturedFrame.self) { group in
             for job in jobs {
@@ -170,13 +255,16 @@ public enum ScreenCapturer {
 /// 但这两个对象在 `SCShareableContent` 生命周期内只读，跨任务传引用是安全的。
 private struct DisplayJob: @unchecked Sendable {
     let display: SCDisplay
-    let selfApp: SCRunningApplication?
+    /// 要排除的自己这个 App
+    let excludedApps: [SCRunningApplication]
+    /// 例外：贴图窗口（排除 App 之后仍要显示）
+    let kept: [SCWindow]
 
     func capture() async throws -> CapturedFrame {
         // 必须按单块 display 构造 filter，SCK 不支持多屏并集
         let filter = SCContentFilter(display: display,
-                                     excludingApplications: selfApp.map { [$0] } ?? [],
-                                     exceptingWindows: [])
+                                     excludingApplications: excludedApps,
+                                     exceptingWindows: kept)
 
         // SCDisplay.width/height 的单位是「点」，不是像素
         let scale = CGFloat(filter.pointPixelScale)

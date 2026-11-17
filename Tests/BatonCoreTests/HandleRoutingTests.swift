@@ -30,7 +30,8 @@ final class HandleRoutingTests: XCTestCase {
         let frame = CapturedFrame(image: context.makeImage()!, display: display)
 
         host = OverlayView(frame: CGRect(x: 0, y: 0, width: 400, height: 300),
-                           captured: frame,
+                           display: display,
+                           image: frame.image,
                            mainScreenHeight: mainScreenHeight,
                            mode: .area,
                            probe: nil)

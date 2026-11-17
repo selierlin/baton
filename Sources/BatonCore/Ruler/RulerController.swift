@@ -21,6 +21,9 @@ public final class RulerController {
     /// 在尺子里量完一块区域后直接按 ↩ 去标注：给出裁好的图和倍率。
     public var onCaptureArea: ((CGImage, CGSize) -> Void)?
 
+    /// 抓帧时要留在画面里的贴图窗口号（尺子也是整屏冻结帧，贴图不该跟着消失）
+    public var pinWindowIDs: Set<CGWindowID> = []
+
     public init(settings: RulerSettingsStore = RulerSettingsStore()) {
         self.settings = settings
     }
@@ -32,7 +35,7 @@ public final class RulerController {
 
         let frames: [CapturedFrame]
         do {
-            frames = try await ScreenCapturer.captureAll()
+            frames = try await ScreenCapturer.captureAll(keepingPins: pinWindowIDs)
         } catch CaptureFailure.screenRecordingDenied {
             PermissionCenter.request(.screenRecording)
             return .failed("缺少屏幕录制权限")

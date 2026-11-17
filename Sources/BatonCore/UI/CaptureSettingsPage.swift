@@ -1,16 +1,20 @@
 import AppKit
 
-/// 截图页：延迟截图的秒数。
+/// 截图页：延迟截图的秒数、成品图带不带阴影。
 ///
-/// 截图模块的设置只有这一项，但和滚动、录制一起躺在「通用」里时，
-/// 用户想改倒计时得先知道它被归到「通用」——按模块分页后路径就直了。
+/// 和滚动、录制一起躺在「通用」里时，用户想改倒计时得先知道它被归到「通用」——
+/// 按模块分页后路径就直了。
 @MainActor
 final class CaptureSettingsPage: NSView {
     /// 延迟截图的默认秒数（1–60）
     var delaySeconds: (() -> Int)?
     var onDelayChange: ((Int) -> Void)?
+    /// 成品图是否带阴影
+    var addsShadow: (() -> Bool)?
+    var onShadowToggle: ((Bool) -> Void)?
 
     private let delayPopup = NSPopUpButton()
+    private let shadowSwitch = NSSwitch()
 
     private static let delayChoices = [3, 5, 10, 15]
 
@@ -31,10 +35,17 @@ final class CaptureSettingsPage: NSView {
         delayPopup.translatesAutoresizingMaskIntoConstraints = false
         delayPopup.widthAnchor.constraint(equalToConstant: 90).isActive = true
 
+        shadowSwitch.target = self
+        shadowSwitch.action = #selector(shadowChanged)
+        shadowSwitch.translatesAutoresizingMaskIntoConstraints = false
+        shadowSwitch.widthAnchor.constraint(equalToConstant: 38).isActive = true
+
         SettingsLayout.install([
             SettingsLayout.section("截图", [
                 SettingsLayout.row("延迟截图", detail: "按下热键后先等这么久，再出现框选",
                                    control: delayPopup),
+                SettingsLayout.row("截图阴影", detail: "复制、保存的图四周留一圈透明边并投下阴影；OCR 与翻译不受影响",
+                                   control: shadowSwitch),
                 SettingsLayout.plain(SettingsLayout.note("区域、全屏、上次区域这些动作本身没有设置项，按哪个键在「热键」页里绑。")),
             ]),
         ], in: self)
@@ -42,6 +53,7 @@ final class CaptureSettingsPage: NSView {
 
     func reload() {
         selectDelay(delaySeconds?() ?? 5)
+        shadowSwitch.state = (addsShadow?() ?? true) ? .on : .off
     }
 
     private func selectDelay(_ seconds: Int) {
@@ -56,5 +68,10 @@ final class CaptureSettingsPage: NSView {
         let index = delayPopup.indexOfSelectedItem
         guard index >= 0, index < Self.delayChoices.count else { return }
         onDelayChange?(Self.delayChoices[index])
+    }
+
+    @objc private func shadowChanged() {
+        ActionLog.action("setting.capture.shadow", "on=\(shadowSwitch.state == .on)")
+        onShadowToggle?(shadowSwitch.state == .on)
     }
 }

@@ -70,6 +70,12 @@ public final class CaptureSession {
     private let picker = PickService()
     private let settings: CaptureSettingsStore
 
+    /// 抓帧时要留在画面里的贴图窗口号，AppShell 每次进截图前刷新。
+    ///
+    /// 空集 = 自己的窗口全排除（覆盖层、HUD、设置窗都不进图），和以前一致；
+    /// 填了贴图窗口就把它们留下来——按截图时贴图当场消失是说不通的。
+    public var pinWindowIDs: Set<CGWindowID> = []
+
     public init(overlay: OverlayController = OverlayController(),
                 settings: CaptureSettingsStore = CaptureSettingsStore()) {
         self.overlay = overlay
@@ -86,7 +92,7 @@ public final class CaptureSession {
     public func selectRegion() async -> CaptureSelection? {
         let frames: [CapturedFrame]
         do {
-            frames = try await ScreenCapturer.captureAll()
+            frames = try await ScreenCapturer.captureAll(keepingPins: pinWindowIDs)
         } catch {
             log.error("录制选区抓帧失败：\(error.localizedDescription, privacy: .public)")
             return nil
@@ -98,7 +104,7 @@ public final class CaptureSession {
     public func selectWindow() async -> Int? {
         let frames: [CapturedFrame]
         do {
-            frames = try await ScreenCapturer.captureAll()
+            frames = try await ScreenCapturer.captureAll(keepingPins: pinWindowIDs)
         } catch {
             log.error("窗口录制抓帧失败：\(error.localizedDescription, privacy: .public)")
             return nil
@@ -148,12 +154,34 @@ public final class CaptureSession {
             }
         }
 
+        // 先立窗、后抓帧：窗口用的是 `NSScreen` 当场就有的几何，图没到之前窗口全透明，
+        // 屏幕上看起来还是原样。以前是先抓完才建窗，那几十毫秒里屏幕上什么都不动，
+        // 用户已经开始拖了 —— 拖拽落在别的 App 上，框完等于没框。
+        let presentation = makePresentation(intent: intent, action: action)
+        if let presentation, case .fixed(let rect) = intent,
+           action == .edit,
+           let display = CaptureGeometry.display(containing: CGPoint(x: rect.midX, y: rect.midY),
+                                                 in: ScreenCapturer.displays()) {
+            overlay.present(displays: [display],
+                            mode: presentation.mode,
+                            probe: presentation.probe,
+                            keepsSelection: presentation.keeps,
+                            initialSelection: CaptureSelection(globalRect: rect, display: display))
+        } else if let presentation {
+            overlay.present(displays: ScreenCapturer.displays(),
+                            mode: presentation.mode,
+                            probe: presentation.probe,
+                            keepsSelection: presentation.keeps)
+        }
+
         let capturedAt = Date()
         do {
-            frames = try await ScreenCapturer.captureAll()
+            frames = try await ScreenCapturer.captureAll(keepingPins: pinWindowIDs)
         } catch CaptureFailure.screenRecordingDenied {
+            overlay.dismiss()
             return .failed("缺少屏幕录制权限")
         } catch {
+            overlay.dismiss()
             return .failed(String(describing: error))
         }
         // 诊断用：人为把抓帧拖慢，验证「热键按下就开拖」的接管路径
@@ -164,13 +192,16 @@ public final class CaptureSession {
         // 抓帧耗时 = 「按了热键，屏幕上却什么都没变」的那段空白，多屏时尤其明显
         ActionLog.action("capture.frames",
                          "ms=\(Int(Date().timeIntervalSince(capturedAt) * 1000)) displays=\(frames.count)")
+        // 冻结帧到位：上屏 + 压暗
+        overlay.fill(frames)
 
         // 长截图：框选阶段还需要冻结帧当画面，框完立刻切到实时采集
         if case .scroll(let direction) = action {
             guard direction == .vertical else {
+                overlay.dismiss()
                 return .failed("长截图暂只支持纵向")
             }
-            let selection = await overlay.select(from: frames, keepsSelection: true)
+            let selection = await overlay.awaitSelection()
             guard let selection,
                   let frame = frames.first(where: {
                       $0.display.displayID == selection.display.displayID
@@ -204,14 +235,13 @@ public final class CaptureSession {
         case .fixed(let rect):
             guard let frame = CaptureGeometry.display(containing: CGPoint(x: rect.midX, y: rect.midY),
                                                       in: frames.map(\.display)) else {
+                overlay.dismiss()
                 return .failed("指定区域不在任何屏幕上")
             }
             if action == .edit {
-                // 固定区域也要有覆盖层当舞台，否则原地编辑没地方挂
-                selection = await overlay.select(from: frames,
-                                                 keepsSelection: true,
-                                                 initialSelection: CaptureSelection(globalRect: rect,
-                                                                                    display: frame))
+                // 固定区域也要有覆盖层当舞台，否则原地编辑没地方挂；
+                // 上面已经带着选区立好窗了，这里只是等它交回来
+                selection = await overlay.awaitSelection()
             } else {
                 selection = CaptureSelection(globalRect: rect, display: frame)
             }
@@ -226,36 +256,8 @@ public final class CaptureSession {
                 return .failed("上一次区域已不在屏幕内（分辨率可能变了）")
             }
             selection = CaptureSelection(globalRect: last.rect, display: frame.display)
-        case .area:
-            // Longshot 的「开始截图」不是纯拖框：鼠标停在窗口/元素上就自动框出来，
-            // 单击即选，拖动才是自由框选。拾取失败（没给辅助功能权限、目标不支持 AX）
-            // 由 PickService 退回整窗，再不行就当普通拖框，逐级降级不会挡路。
-            //
-            // 长截图例外：滚动会话要的是精确的滚动区域，悬停高亮只会干扰判读。
-            var pickArea: PickProbe?
-            if case .scroll = action {
-                pickArea = nil
-            } else {
-                picker.invalidate()
-                // 粒度由覆盖层决定：⇥ 可以在「元素/窗口区域」和「整窗」之间切
-                pickArea = { [picker] point, display, kind in
-                    picker.probe(kind: kind, at: point, in: display)
-                }
-            }
-            // 标注不关覆盖层：框完直接原地变成编辑器，和 Longshot 一致
-            selection = await overlay.select(from: frames,
-                                             probe: pickArea,
-                                             keepsSelection: action == .edit)
-        case .window:
-            picker.invalidate()
-            selection = await overlay.select(from: frames, mode: .pick) { [picker] point, display, _ in
-                picker.probe(kind: .window, at: point, in: display)
-            }
-        case .element:
-            picker.invalidate()
-            selection = await overlay.select(from: frames, mode: .pick) { [picker] point, display, _ in
-                picker.probe(kind: .element, at: point, in: display)
-            }
+        case .area, .window, .element:
+            selection = await overlay.awaitSelection()
         case .windowID:
             // 指定窗口在上面就走快捷路径返回了，走到这里说明状态不对
             return .failed("窗口抓取未完成")
@@ -289,6 +291,44 @@ public final class CaptureSession {
                                        screenRect: selection.globalRect,
                                        display: frame.display,
                                        action: action))
+    }
+
+    /// 覆盖层的形态：拖框 / 拾取 / 固定区域当舞台。nil = 这条路径根本不铺覆盖层。
+    ///
+    /// 拾取粒度由覆盖层传下来：`.area` 下 ⇥ 可以在「元素/窗口区域」和「整窗」之间切。
+    /// 长截图例外——滚动会话要的是精确的滚动区域，悬停高亮只会干扰判读。
+    private func makePresentation(intent: CaptureIntent, action: CaptureAction)
+        -> (mode: OverlayMode, probe: PickProbe?, keeps: Bool)? {
+        switch intent {
+        case .area:
+            picker.invalidate()
+            var isScroll = false
+            if case .scroll = action { isScroll = true }
+            let probe: PickProbe?
+            if isScroll {
+                probe = nil
+            } else {
+                probe = { [picker] point, display, kind in
+                    picker.probe(kind: kind, at: point, in: display)
+                }
+            }
+            // 标注 / 长截图不关覆盖层：框完直接在原地接着用
+            return (.area, probe, action == .edit || isScroll)
+        case .window:
+            picker.invalidate()
+            return (.pick, { [picker] point, display, _ in
+                picker.probe(kind: .window, at: point, in: display)
+            }, false)
+        case .element:
+            picker.invalidate()
+            return (.pick, { [picker] point, display, _ in
+                picker.probe(kind: .element, at: point, in: display)
+            }, false)
+        case .fixed:
+            return action == .edit ? (.area, nil, true) : nil
+        case .fullScreen, .lastArea, .windowID:
+            return nil
+        }
     }
 
     /// 按 windowID 抓窗口，包装成 `CaptureResult`。

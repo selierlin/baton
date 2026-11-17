@@ -26,6 +26,10 @@ public final class InPlaceAnnotator {
     public var onFinish: ((Outcome) -> Void)?
     public var onExternal: ((ExternalRequest) -> Void)?
 
+    /// 成品图加工（阴影）。只在复制 / 保存 / 打开这类「给人看」的出口用，
+    /// OCR 和二维码识别仍看原图。第二个参数是这张图的像素倍率。
+    public var decorate: ((CGImage, CGFloat) -> CGImage)?
+
     private let pinController: PinController
     /// 每次截图都换一份全新文档，否则上一张图的标注会跟着留到下一次截图。
     private var document = AnnotateDocument()
@@ -437,7 +441,7 @@ public final class InPlaceAnnotator {
             guard let flat = flattened() else { return }
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
-            pasteboard.writeObjects([NSImage(cgImage: flat, size: .zero)])
+            pasteboard.writeObjects([NSImage(cgImage: decorate?(flat, scale) ?? flat, size: .zero)])
             finish(.copied)
 
         case .save:
@@ -445,12 +449,13 @@ public final class InPlaceAnnotator {
             let panel = NSSavePanel()
             panel.allowedContentTypes = [.png]
             panel.nameFieldStringValue = "Baton-\(Self.timestamp()).png"
+            let output = decorate?(flat, scale) ?? flat
             // 覆盖层在 statusBar 层，会把保存面板压住
             overlay?.setWindowLevel(.normal)
             panel.begin { [weak self] response in
                 self?.overlay?.setWindowLevel(.statusBar)
                 guard response == .OK, let url = panel.url,
-                      let data = Self.pngData(flat) else { return }
+                      let data = Self.pngData(output) else { return }
                 try? data.write(to: url)
                 self?.finish(.saved(url))
             }
@@ -502,22 +507,24 @@ public final class InPlaceAnnotator {
         guard let flat = flattened() else { return }
         switch action {
         case .qr:
+            // 二维码必须看原图：阴影和留白会改变码周围的反差，识别率直接掉
             let host = canvas?.window
             AnnotateExport.decodeQR(flat) { [weak self] payloads in
                 AnnotateExport.presentQRResult(payloads, attachedTo: host)
                 self?.finish(.handedOff)
             }
         case .open:
-            AnnotateExport.open(flat)
+            AnnotateExport.open(decorate?(flat, scale) ?? flat)
             finish(.handedOff)
         case .airDrop:
             // 先撤覆盖层：隔空投送的面板会挂在当前窗口上，窗口没了才能独立弹出来
+            let output = decorate?(flat, scale) ?? flat
             finish(.handedOff)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                AnnotateExport.airDrop(flat)
+                AnnotateExport.airDrop(output)
             }
         case .saveAndCopy:
-            AnnotateExport.copy(flat)
+            AnnotateExport.copy(decorate?(flat, scale) ?? flat)
             perform(.save)
         }
     }
@@ -562,6 +569,25 @@ public final class InPlaceAnnotator {
         overlay?.dismiss()
         overlay = nil
         onFinish?(outcome)
+    }
+
+    /// 外部要接管这块屏幕（例如框选阶段又按了一次截图热键）：拆掉编辑器，
+    /// 但**不**回头去 dismiss 覆盖层 —— 调用方会连它一起收，或者换成新的一场。
+    public func discard() {
+        guard !hasFinished else { return }
+        hasFinished = true
+        canvas?.commitPendingText()
+        canvas?.removeFromSuperview()
+        bar?.removeFromSuperview()
+        properties?.removeFromSuperview()
+        selectionChrome.removeFromSuperlayer()
+        hostView?.annotationCanvas = nil
+        hostView?.onSelectionResize = nil
+        canvas = nil
+        bar = nil
+        properties = nil
+        overlay = nil
+        onFinish?(.cancelled)
     }
 
     // MARK: - 工具

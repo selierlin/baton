@@ -30,6 +30,10 @@ public final class AnnotateWindowController: NSObject, NSWindowDelegate {
     private var hasFinished = false
     private let pinController: PinController
 
+    /// 成品图加工（阴影）。只在复制 / 保存 / 打开这类「给人看」的出口用，
+    /// OCR 和二维码识别仍看原图。第二个参数是这张图的像素倍率。
+    public var decorate: ((CGImage, CGFloat) -> CGImage)?
+
     public init(pinController: PinController) {
         self.pinController = pinController
         super.init()
@@ -232,16 +236,17 @@ public final class AnnotateWindowController: NSObject, NSWindowDelegate {
             guard let flat = flattened() else { return }
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
-            pasteboard.writeObjects([NSImage(cgImage: flat, size: .zero)])
+            pasteboard.writeObjects([NSImage(cgImage: decorate?(flat, scale) ?? flat, size: .zero)])
             finish(.copied)
         case .save:
             guard let flat = flattened() else { return }
             let panel = NSSavePanel()
             panel.allowedContentTypes = [.png]
             panel.nameFieldStringValue = "Baton-\(Self.timestamp()).png"
+            let output = decorate?(flat, scale) ?? flat
             panel.begin { [weak self] response in
                 guard response == .OK, let url = panel.url else { return }
-                guard let data = Self.pngData(flat) else { return }
+                guard let data = Self.pngData(output) else { return }
                 try? data.write(to: url)
                 self?.finish(.saved(url))
             }
@@ -270,22 +275,24 @@ public final class AnnotateWindowController: NSObject, NSWindowDelegate {
         guard let flat = flattened() else { return }
         switch action {
         case .qr:
+            // 二维码必须看原图：阴影和留白会改变码周围的反差，识别率直接掉
             let host = window
             AnnotateExport.decodeQR(flat) { [weak self] payloads in
                 AnnotateExport.presentQRResult(payloads, attachedTo: host)
                 self?.finish(.handedOff)
             }
         case .open:
-            AnnotateExport.open(flat)
+            AnnotateExport.open(decorate?(flat, scale) ?? flat)
             finish(.handedOff)
         case .airDrop:
             // 先关窗：隔空投送的面板会挂在当前窗口上
+            let output = decorate?(flat, scale) ?? flat
             finish(.handedOff)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                AnnotateExport.airDrop(flat)
+                AnnotateExport.airDrop(output)
             }
         case .saveAndCopy:
-            AnnotateExport.copy(flat)
+            AnnotateExport.copy(decorate?(flat, scale) ?? flat)
             perform(.save)
         }
     }

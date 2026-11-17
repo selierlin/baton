@@ -25,6 +25,15 @@ final class CaptureSettingsTests: XCTestCase {
         let store = CaptureSettingsStore(url: tempURL())
         XCTAssertNil(store.settings.lastArea)
         XCTAssertEqual(store.settings.timedSeconds, 5)
+        XCTAssertTrue(store.settings.addsShadow)
+    }
+
+    func testAddsShadowPersists() {
+        let url = tempURL()
+        let store = CaptureSettingsStore(url: url)
+        store.setAddsShadow(false)
+        XCTAssertFalse(CaptureSettingsStore(url: url).settings.addsShadow)
+        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
     }
 
     func testTimedSecondsIsClamped() {

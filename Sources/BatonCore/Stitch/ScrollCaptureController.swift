@@ -47,18 +47,25 @@ public final class ScrollCaptureController {
 
     private let selection: CaptureSelection
     private let overlay: OverlayController
+    /// 要留在画面里的贴图窗口号
+    private let pins: Set<CGWindowID>
     private var hud: ScrollHUD?
     private var finishRequested = false
     private var cancelRequested = false
 
-    public init(selection: CaptureSelection, overlay: OverlayController) {
+    public init(selection: CaptureSelection, overlay: OverlayController,
+                pins: Set<CGWindowID> = []) {
         self.selection = selection
         self.overlay = overlay
+        self.pins = pins
     }
 
     public func run() async -> End {
+        // 逐帧抓的时候覆盖层还盖在屏幕上，必须排除；贴图要留下，
+        // 否则拼出来的长图里贴图那块是空的。
         guard let capturer = try? await RegionCaptureSession(rect: selection.globalRect,
-                                                             display: selection.display),
+                                                             display: selection.display,
+                                                             pins: pins),
               let first = try? await capturer.capture() else {
             return .failed("抓取首帧失败")
         }

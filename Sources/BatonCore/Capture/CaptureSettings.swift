@@ -37,10 +37,14 @@ public struct CaptureSettings: Codable, Sendable, Equatable {
     public var lastArea: LastArea?
     /// 延迟截图的默认秒数。
     public var timedSeconds: Int
+    /// 成品图是否带阴影。只影响「给人看」的输出（复制、保存、标注导出），
+    /// OCR / 翻译 / 钉图仍用原图。
+    public var addsShadow: Bool
 
-    public init(lastArea: LastArea? = nil, timedSeconds: Int = 5) {
+    public init(lastArea: LastArea? = nil, timedSeconds: Int = 5, addsShadow: Bool = true) {
         self.lastArea = lastArea
         self.timedSeconds = timedSeconds
+        self.addsShadow = addsShadow
     }
 
     /// 手写解码：以后加字段时老配置不会整份失效。
@@ -49,6 +53,7 @@ public struct CaptureSettings: Codable, Sendable, Equatable {
         lastArea = try? container.decodeIfPresent(LastArea.self, forKey: .lastArea)
         timedSeconds = (try? container.decodeIfPresent(Int.self, forKey: .timedSeconds)) ?? 5
         if !(1...60).contains(timedSeconds) { timedSeconds = 5 }
+        addsShadow = (try? container.decodeIfPresent(Bool.self, forKey: .addsShadow)) ?? true
     }
 }
 
@@ -97,6 +102,12 @@ public final class CaptureSettingsStore {
         let clamped = min(max(seconds, 1), 60)
         guard settings.timedSeconds != clamped else { return }
         settings.timedSeconds = clamped
+        save()
+    }
+
+    public func setAddsShadow(_ enabled: Bool) {
+        guard settings.addsShadow != enabled else { return }
+        settings.addsShadow = enabled
         save()
     }
 

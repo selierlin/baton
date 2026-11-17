@@ -65,8 +65,9 @@ public final class ConfigTransfer {
     /// 一律走各 store 现成的 setter / save，不直接写文件——内存里的状态和磁盘必须一起变。
     public func apply(_ bundle: ConfigBundle) throws {
         if let section = bundle.capture {
-            // 只拿秒数：lastArea 属于「当前这台机器上次框在哪」
+            // 只拿偏好：lastArea 属于「当前这台机器上次框在哪」
             capture.setTimedSeconds(section.timedSeconds)
+            capture.setAddsShadow(section.addsShadow)
         }
 
         if let section = bundle.smoothScroll, let scroll {
