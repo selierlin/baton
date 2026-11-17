@@ -28,6 +28,8 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
     public var onExportConfig: (() -> Void)?
     /// 通用页的「导入配置…」
     public var onImportConfig: (() -> Void)?
+    /// 通用页的「导出诊断信息…」
+    public var onExportDiagnostics: (() -> Void)?
 
     private let loginItem: LoginItem
     private weak var inputSource: InputSourceService?
@@ -163,6 +165,7 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
         // 文件面板与确认框在 AppShell 里弹：窗口层只管「用户点了这个按钮」
         general.onExportConfig = { [weak self] in self?.onExportConfig?() }
         general.onImportConfig = { [weak self] in self?.onImportConfig?() }
+        general.onExportDiagnostics = { [weak self] in self?.onExportDiagnostics?() }
         generalPage = general
 
         let scroll = ScrollSettingsPage()
@@ -203,6 +206,12 @@ public final class PreferencesWindowController: NSObject, NSWindowDelegate, NSTo
         }
         capture.onDelayChange = { [weak self] seconds in
             self?.captureSettings?.setTimedSeconds(seconds)
+        }
+        capture.addsShadow = { [weak self] in
+            self?.captureSettings?.settings.addsShadow ?? true
+        }
+        capture.onShadowToggle = { [weak self] enabled in
+            self?.captureSettings?.setAddsShadow(enabled)
         }
         capturePage = capture
 

@@ -6,6 +6,7 @@ import Foundation
 public enum HotkeyAction: String, CaseIterable, Sendable {
     case annotate
     case pin
+    case pinClipboard
     case scroll
     case ruler
     case ocr
@@ -28,6 +29,7 @@ public enum HotkeyAction: String, CaseIterable, Sendable {
         switch self {
         case .annotate: return "区域截图"
         case .pin: return "截图贴图"
+        case .pinClipboard: return "剪贴板贴图"
         case .scroll: return "长截图"
         case .ruler: return "屏幕尺子"
         case .ocr: return "截图 OCR"
@@ -54,6 +56,8 @@ public enum HotkeyAction: String, CaseIterable, Sendable {
         switch self {
         case .annotate: return KeyCombo(keyCode: UInt32(kVK_ANSI_A), modifiers: UInt32(cmdKey | optionKey))
         case .pin: return KeyCombo(keyCode: UInt32(kVK_ANSI_P), modifiers: UInt32(cmdKey | optionKey))
+        // ⌃⌘ 组里 P 还空着（1-0、- 都被录屏/截图占了），P 也和「贴图」对得上
+        case .pinClipboard: return KeyCombo(keyCode: UInt32(kVK_ANSI_P), modifiers: UInt32(cmdKey | controlKey))
         case .scroll: return KeyCombo(keyCode: UInt32(kVK_ANSI_L), modifiers: UInt32(cmdKey | optionKey))
         case .ruler: return KeyCombo(keyCode: UInt32(kVK_ANSI_R), modifiers: UInt32(cmdKey | optionKey))
         case .ocr: return KeyCombo(keyCode: UInt32(kVK_ANSI_O), modifiers: UInt32(cmdKey | shiftKey))
@@ -292,14 +296,33 @@ public extension KeyCombo {
         }
     }
 
+    /// 单独按也不出字、可以不带修饰键直接当热键的键。
+    ///
+    /// F 键的 keycode 是错位的（F1=122、F3=99、F4=118），必须逐个列，不能按区间推。
+    public static func isStandalone(_ keyCode: UInt32) -> Bool {
+        switch Int(keyCode) {
+        case kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6,
+             kVK_F7, kVK_F8, kVK_F9, kVK_F10, kVK_F11, kVK_F12,
+             kVK_LeftArrow, kVK_RightArrow, kVK_UpArrow, kVK_DownArrow,
+             kVK_Home, kVK_End, kVK_PageUp, kVK_PageDown, kVK_ForwardDelete:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// 从按键事件取组合。没有修饰键的普通字符不算热键（会把打字全吞掉）。
+    ///
+    /// F 键和方向键例外：它们不出字，单按不会影响打字。注意 AppKit 会给这类事件
+    /// 自动塞一个 `.function` 标志——那不是用户按的修饰键，也不对应 Carbon 的修饰位，
+    /// 所以不能拿它凑数，否则 F3 单按会被当成「没有修饰键」直接拒掉。
     init?(event: NSEvent) {
         var modifiers: UInt32 = 0
         if event.modifierFlags.contains(.command) { modifiers |= UInt32(cmdKey) }
         if event.modifierFlags.contains(.option) { modifiers |= UInt32(optionKey) }
         if event.modifierFlags.contains(.control) { modifiers |= UInt32(controlKey) }
         if event.modifierFlags.contains(.shift) { modifiers |= UInt32(shiftKey) }
-        guard modifiers != 0 else { return nil }
+        guard modifiers != 0 || Self.isStandalone(UInt32(event.keyCode)) else { return nil }
         self.init(keyCode: UInt32(event.keyCode), modifiers: modifiers)
     }
 

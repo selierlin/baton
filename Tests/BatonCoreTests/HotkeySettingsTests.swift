@@ -1,3 +1,4 @@
+import AppKit
 import Carbon.HIToolbox
 import XCTest
 @testable import BatonCore
@@ -191,5 +192,51 @@ final class HotkeySettingsTests: XCTestCase {
     func testDefaultCombosDoNotHitSystemShortcuts() {
         let actions = HotkeyAction.allCases.map { ($0.title, $0.defaultCombo) }
         XCTAssertTrue(HotkeyAudit.warnings(actions: actions).isEmpty)
+    }
+
+    // MARK: - 录入：F 键与方向键
+
+    private func keyEvent(_ keyCode: Int, flags: NSEvent.ModifierFlags) -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
+                         timestamp: 0, windowNumber: 0, context: nil,
+                         characters: "", charactersIgnoringModifiers: "",
+                         isARepeat: false, keyCode: UInt16(keyCode))!
+    }
+
+    /// AppKit 会给 F 键自动带上 `.function` 标志，看起来像「按了修饰键」，实际是单按。
+    /// 之前把「有修饰键」当成硬条件，F3 就永远录不进来。
+    func testFunctionKeyAloneCanBeRecorded() {
+        let combo = KeyCombo(event: keyEvent(kVK_F3, flags: [.function]))
+        XCTAssertEqual(combo?.keyCode, UInt32(kVK_F3))
+        XCTAssertEqual(combo?.modifiers, 0)
+        XCTAssertEqual(combo?.display, "F3")
+    }
+
+    func testArrowKeyAloneCanBeRecorded() {
+        let combo = KeyCombo(event: keyEvent(kVK_LeftArrow, flags: [.function, .numericPad]))
+        XCTAssertEqual(combo?.keyCode, UInt32(kVK_LeftArrow))
+        XCTAssertEqual(combo?.modifiers, 0)
+        XCTAssertEqual(combo?.display, "←")
+    }
+
+    /// 带修饰键的照样连修饰键一起记，不能因为放行单按就把 ⌘F3 记成 F3
+    func testFunctionKeyKeepsModifiers() {
+        let combo = KeyCombo(event: keyEvent(kVK_F3, flags: [.function, .command]))
+        XCTAssertEqual(combo?.modifiers, UInt32(cmdKey))
+        XCTAssertEqual(combo?.display, "⌘F3")
+    }
+
+    /// 字母、数字、空格单按不出字也要拦：Carbon 会把打字全吞掉
+    func testBareTypingKeyIsStillRejected() {
+        XCTAssertNil(KeyCombo(event: keyEvent(kVK_ANSI_A, flags: [])))
+        XCTAssertNil(KeyCombo(event: keyEvent(kVK_Space, flags: [])))
+    }
+
+    /// keycode 是乱的（F1=122、F3=99、F4=118），白名单不能按区间推
+    func testStandaloneKeyWhitelistDoesNotLeak() {
+        XCTAssertTrue(KeyCombo.isStandalone(UInt32(kVK_F1)))
+        XCTAssertTrue(KeyCombo.isStandalone(UInt32(kVK_F12)))
+        XCTAssertFalse(KeyCombo.isStandalone(UInt32(kVK_ANSI_1)))
+        XCTAssertFalse(KeyCombo.isStandalone(UInt32(kVK_Tab)))
     }
 }

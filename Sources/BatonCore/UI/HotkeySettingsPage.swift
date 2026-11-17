@@ -40,6 +40,7 @@ final class HotkeySettingsPage: NSView {
             let recorder = HotkeyRecorder(combo: action.defaultCombo)
             recorder.onCommit = { [weak self] combo in self?.commit(combo, for: action) }
             recorder.onReset = { [weak self] in self?.reset(action) }
+            recorder.onHint = { [weak self] text in self?.showHint(text) }
             recorders[action] = recorder
 
             let toggle = NSButton(title: "", target: nil, action: nil)
@@ -185,6 +186,12 @@ final class HotkeySettingsPage: NSView {
             : "恢复绑定（\(settings.combo(for: action).display)）"
     }
 
+    /// 录制时遇到的问题（媒体键、只按字符）统一走这里，别只「哔」一声了事。
+    private func showHint(_ text: String) {
+        hint.stringValue = text
+        hint.textColor = .systemOrange
+    }
+
     private func commit(_ combo: KeyCombo, for action: HotkeyAction) {
         if let conflict = settings.conflict(of: combo, ignoring: action) {
             hint.stringValue = "\(combo.display) 已被「\(conflict.title)」占用"
@@ -225,9 +232,12 @@ final class HotkeySettingsPage: NSView {
 private final class HotkeyRecorder: NSButton {
     var onCommit: ((KeyCombo) -> Void)?
     var onReset: (() -> Void)?
+    var onHint: ((String) -> Void)?
 
     private var combo: KeyCombo
     private var isRecording = false
+    /// 录的时候截系统媒体键，录完就摘掉
+    private var mediaKeyMonitor: Any?
     /// 取消绑定的动作：按钮还在（点一下就能录新组合），但显示「未启用」而不是一个假的键
     private var isBound = true
 
@@ -288,11 +298,33 @@ private final class HotkeyRecorder: NSButton {
         show("按下快捷键…", dimmed: false)
         bezelColor = .controlAccentColor
         window?.makeFirstResponder(self)
+        watchSystemKeys()
+    }
+
+    /// 默认设置下 F1–F12 发的是系统媒体键（F3 = 调度中心），根本不走 `keyDown`。
+    /// 录的时候把它们截下来：否则按下 F3 只会弹出调度中心、把设置窗盖掉，
+    /// 用户看到的就是「这个键录不进去」。
+    private func watchSystemKeys() {
+        stopWatchingSystemKeys()
+        mediaKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .systemDefined) { [weak self] event in
+            guard let self, self.isRecording else { return event }
+            self.onHint?("这颗 F 键现在发的是系统媒体键，App 收不到。按住 fn 再按一次；"
+                         + "或在「系统设置 → 键盘」里打开「将 F1、F2 等键用作标准功能键」")
+            return nil
+        }
+    }
+
+    private func stopWatchingSystemKeys() {
+        if let mediaKeyMonitor {
+            NSEvent.removeMonitor(mediaKeyMonitor)
+            self.mediaKeyMonitor = nil
+        }
     }
 
     private func stop() {
         guard isRecording else { return }
         isRecording = false
+        stopWatchingSystemKeys()
         show(isBound ? combo.display : "未启用", dimmed: !isBound)
         bezelColor = nil
     }
@@ -318,6 +350,7 @@ private final class HotkeyRecorder: NSButton {
         guard let combo = KeyCombo(event: event) else {
             // 只有字母没有修饰键：Carbon 会把打字吞掉，直接拒
             NSSound.beep()
+            onHint?("单个字母 / 数字不能当热键（会把打字吞掉），加一个 ⌃⌥⇧⌘；F1–F12、方向键可以单按")
             return
         }
         self.combo = combo

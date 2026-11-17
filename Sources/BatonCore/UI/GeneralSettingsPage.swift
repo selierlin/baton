@@ -8,6 +8,7 @@ final class GeneralSettingsPage: NSView {
     var onLoginToggle: ((Bool) -> Void)?
     var onExportConfig: (() -> Void)?
     var onImportConfig: (() -> Void)?
+    var onExportDiagnostics: (() -> Void)?
 
     private let loginSwitch = NSSwitch()
     private let versionLabel = NSTextField(labelWithString: "")
@@ -89,6 +90,7 @@ final class GeneralSettingsPage: NSView {
         let folders = NSStackView(views: [
             smallButton("打开配置文件夹", action: #selector(openConfigFolder)),
             smallButton("打开日志文件夹", action: #selector(openLogFolder)),
+            smallButton("导出诊断信息…", action: #selector(exportDiagnostics)),
         ])
         folders.orientation = .horizontal
         folders.spacing = 8
@@ -121,6 +123,8 @@ final class GeneralSettingsPage: NSView {
     @objc private func exportConfig() { onExportConfig?() }
 
     @objc private func importConfig() { onImportConfig?() }
+
+    @objc private func exportDiagnostics() { onExportDiagnostics?() }
 
     @objc private func openLogFolder() {
         open(ActionLog.shared.directory, name: "log.open")
