@@ -15,6 +15,10 @@ public final class OCRPanelController {
 
     private let panel: KeyablePanel
     private let content: OCRContentView
+    /// 钉住后不再自动收窗（点别处 / 换 App 都留着）
+    private var pinned = false
+    /// 通知令牌只在 deinit 里用一次；nonisolated 让 deinit 也能读到它
+    nonisolated(unsafe) private var resignObserver: NSObjectProtocol?
 
     /// 参数是（识别文本, 目标语言）。目标语言来自右下角胶囊，用户可以改。
     public var onTranslate: ((String, String) -> Void)?
@@ -45,6 +49,26 @@ public final class OCRPanelController {
         content.onClose = { [weak self] in self?.hide() }
         content.onCapture = { [weak self] in self?.onCapture?() }
         content.onRecognizeImage = { [weak self] image in self?.onRecognizeImage?(image) }
+        content.onTogglePin = { [weak self] on in self?.setPinned(on) }
+
+        // 点到别处（点了别的 App、点了桌面）就收窗，跟系统浮窗一个手感。
+        // 钉住的除外——「钉住」就是「别自己消失」，这时只有 Esc 和关闭按钮能收。
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification, object: panel, queue: .main
+        ) { [weak self] _ in
+            // 等这一轮事件走完再判断：点别的 App 会让本 App 失活，点本 App 自己的窗口
+            // （比如「设置」）不会。前者收窗，后者不该把结果窗关掉。
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.panel.isVisible, !self.pinned, !NSApp.isActive else { return }
+                    self.hide()
+                }
+            }
+        }
+    }
+
+    deinit {
+        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
     }
 
     public var isVisible: Bool { panel.isVisible }
@@ -91,6 +115,14 @@ public final class OCRPanelController {
 
     public func hide() {
         panel.orderOut(nil)
+        // 关掉就把「钉住」复位：下次打开还是普通浮窗，不会莫名其妙又置顶
+        if pinned { setPinned(false) }
+    }
+
+    private func setPinned(_ on: Bool) {
+        pinned = on
+        panel.level = on ? .floating : .normal
+        content.reflectPin(on)
     }
 }
 
@@ -146,6 +178,7 @@ private final class OCRContentView: NSView {
     var onOpenSettings: (() -> Void)?
     var onCapture: (() -> Void)?
     var onRecognizeImage: ((CGImage) -> Void)?
+    var onTogglePin: ((Bool) -> Void)?
     var onClose: (() -> Void)?
 
     private var mode: ViewMode = .split
@@ -427,7 +460,13 @@ private final class OCRContentView: NSView {
 
     @objc private func togglePin() {
         pinButton.isOn.toggle()
-        window?.level = pinButton.isOn ? .floating : .normal
+        // 窗口层级由控制器改：它还要记住这个状态，用来决定「点别处要不要收窗」
+        onTogglePin?(pinButton.isOn)
+    }
+
+    /// 控制器收窗时把按钮也拨回去，别留一个亮着的钉子在隐藏的窗口里
+    func reflectPin(_ on: Bool) {
+        pinButton.isOn = on
     }
 
     @objc private func openSettings() { onOpenSettings?() }

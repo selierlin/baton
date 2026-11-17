@@ -21,8 +21,10 @@ public final class TranslatePanelController {
     private let panel: KeyablePanel
     private let card: TranslateCardView
     private var copyResetTask: Task<Void, Never>?
-    /// 钉住后不再跟着鼠标重排位置
+    /// 钉住后不再跟着鼠标重排位置，也不再点别处就收窗
     private var pinned = false
+    /// 通知令牌只在 deinit 里用一次；nonisolated 让 deinit 也能读到它
+    nonisolated(unsafe) private var resignObserver: NSObjectProtocol?
 
     public var onPickSource: ((String?) -> Void)?
     public var onPickTarget: ((String) -> Void)?
@@ -48,7 +50,25 @@ public final class TranslatePanelController {
         card.onPickSource = { [weak self] code in self?.onPickSource?(code) }
         card.onPickTarget = { [weak self] code in self?.onPickTarget?(code) }
         card.onSwap = { [weak self] in self?.onSwap?() }
-        card.onTogglePin = { [weak self] on in self?.pinned = on }
+        card.onTogglePin = { [weak self] on in self?.setPinned(on) }
+
+        // 点到别处就收窗，跟 OCR 窗一致；钉住了才留着
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification, object: panel, queue: .main
+        ) { [weak self] _ in
+            // 等这一轮事件走完再判断：点别的 App 会让本 App 失活，点本 App 自己的窗口
+            // （比如「设置」）不会。前者收窗，后者不该把结果窗关掉。
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.panel.isVisible, !self.pinned, !NSApp.isActive else { return }
+                    self.hide()
+                }
+            }
+        }
+    }
+
+    deinit {
+        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
     }
 
     public var isVisible: Bool { panel.isVisible }
@@ -131,13 +151,17 @@ public final class TranslatePanelController {
     public func hide() {
         card.stopLoading()
         panel.orderOut(nil)
+        // 关掉就把「钉住」复位，下次打开是普通浮窗
+        if pinned { setPinned(false) }
     }
 
     // MARK: - 窗口
 
     private func buildWindow() {
-        panel.isFloatingPanel = true
-        panel.level = .floating
+        // 跟 OCR 窗一致：默认是普通窗口层级，切到别的 App 就被压下去，
+        // 不是永远飘在所有东西上面。要常驻眼前点工具栏的「钉住」，那是显式的置顶开关。
+        panel.isFloatingPanel = false
+        panel.level = .normal
         // 圆角靠卡片自己画，窗口必须透明，否则会盖一层方形白底。
         panel.backgroundColor = .clear
         panel.isOpaque = false
@@ -211,6 +235,13 @@ public final class TranslatePanelController {
 
     // MARK: - 动作
 
+    /// 钉住 = 窗口置顶 + 新结果不再跟着鼠标重排 + 点别处不收窗。跟 OCR 窗的「钉住」一套语义。
+    private func setPinned(_ on: Bool) {
+        pinned = on
+        panel.level = on ? .floating : .normal
+        card.reflectPin(on)
+    }
+
     private func copyResult() {
         guard let text = card.copyableResultText, !text.isEmpty else { return }
         NSPasteboard.general.clearContents()
@@ -274,7 +305,7 @@ private final class TranslateCardView: NSView {
     private static let languageBarHeight: CGFloat = 30
     fileprivate static let maxSourceHeight: CGFloat = 236
 
-    private let pinButton = IconToggle(symbol: "pin", activeSymbol: "pin.fill", tooltip: "钉住：新结果不再移动窗口")
+    private let pinButton = IconToggle(symbol: "pin", activeSymbol: "pin.fill", tooltip: "钉住窗口（置顶，新结果不再移动）")
     private let speakToolbarButton = IconButton(symbol: "speaker.wave.2", tooltip: "朗读原文", pointSize: 16)
     private let speakSourceButton = IconButton(symbol: "speaker.wave.2", tooltip: "朗读原文", pointSize: 15)
     private let copySourceButton = IconButton(symbol: "square.on.square", tooltip: "复制原文", pointSize: 15)
@@ -401,6 +432,9 @@ private final class TranslateCardView: NSView {
             self?.superview?.needsLayout = true
         }
     }
+
+    /// Esc 收窗：跟 OCR 窗同一个肌肉记忆
+    override func cancelOperation(_ sender: Any?) { onClose?() }
 
     // MARK: 内容
 
@@ -622,6 +656,11 @@ private final class TranslateCardView: NSView {
     @objc private func pinTapped() {
         pinButton.isOn.toggle()
         onTogglePin?(pinButton.isOn)
+    }
+
+    /// 控制器收窗时把按钮拨回去
+    func reflectPin(_ on: Bool) {
+        pinButton.isOn = on
     }
 
     @objc private func speakSource() {

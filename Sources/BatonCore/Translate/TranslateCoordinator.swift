@@ -32,8 +32,7 @@ public final class TranslateCoordinator {
         panel.onSwap = { [weak self] in self?.swapLanguages() }
         panel.onOpenSettings = { [weak self] in self?.onOpenSettings?("翻译") }
         ocrPanel.onTranslate = { [weak self] text, target in
-            // 翻译浮窗自己会带原文，OCR 窗留在前面只会互相挡
-            self?.ocrPanel.hide()
+            // 翻译浮窗自己会带原文，OCR 窗留在前面只会互相挡（收窗在 translate 里统一做）
             Task { await self?.translate(text: text, target: target) }
         }
         ocrPanel.onCapture = { [weak self] in self?.onRequestCapture?() }
@@ -70,6 +69,7 @@ public final class TranslateCoordinator {
     public func translateSelection() async {
         guard let text = SelectionReader.selectedText() else {
             // 带上诊断串：是没授权、前台 App 没暴露焦点元素，还是焦点元素里没选中内容
+            ocrPanel.hide()
             panel.showFailure(message: "没有取到选中文本（\(SelectionReader.diagnose())）。"
                               + "请先在目标 App 里选中文字，再按一次热键。",
                               source: "",
@@ -106,7 +106,11 @@ public final class TranslateCoordinator {
         let started = CFAbsoluteTimeGetCurrent()
         // 先把窗口摆出来：识别（尤其云端）加二维码扫描常在 1s 以上，
         // 这段时间屏幕上什么都不动，看着就像还停在框选里。
-        if !silent { ocrPanel.showLoading(image: image, engine: ocrName) }
+        if !silent {
+            // 同一时刻只留一个结果窗：上一次的翻译浮窗先收掉
+            panel.hide()
+            ocrPanel.showLoading(image: image, engine: ocrName)
+        }
         ActionLog.action("ocr.begin", "engine=\(ocrName) px=\(image.width)x\(image.height)")
 
         func finish(failed: Bool, _ detail: String) {
@@ -142,7 +146,6 @@ public final class TranslateCoordinator {
                               engine: ocrName,
                               copiedHint: combined.isEmpty ? nil : "已复制 \(combined.count) 个字符",
                               codes: codes)
-                panel.hide()
             }
             finish(failed: false, "lines=\(result.lines.count) codes=\(codes.count)")
         } catch {
@@ -179,6 +182,8 @@ public final class TranslateCoordinator {
     /// `target` 非空时只影响这一下（OCR 窗右下角的语言胶囊），不改全局设置。
     private func translate(text: String, target: String? = nil) async {
         lastText = text
+        // 翻译浮窗自己带原文，OCR 窗留在旁边只会互相挡：同一时刻只留一个结果窗。
+        ocrPanel.hide()
         let target = target ?? settings.targetLanguage
         let pair = TranslateLanguagePair(source: settings.sourceLanguage, target: target)
         guard let config = settings.active else {
