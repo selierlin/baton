@@ -167,9 +167,15 @@ case "--input-switch":
     }
     MainActor.assumeIsolated {
         let catalog = InputSourceCatalog()
-        let before = catalog.currentID ?? "-"
-        let ok = catalog.select(id: args[1])
-        print("from=\(before) to=\(catalog.currentID ?? "-") changed=\(ok)")
+        let outcome = catalog.select(id: args[1])
+        print("target=\(outcome.target) from=\(outcome.before ?? "-") "
+              + "now=\(outcome.after ?? "-") status=\(outcome.status) "
+              + "accepted=\(outcome.accepted) changed=\(outcome.changed)")
+        // 第三方输入法（豆包这类）可能过一会才真正接管，分开读两次才看得出是哪种
+        Thread.sleep(forTimeInterval: 0.25)
+        print("settled(250ms)=\(catalog.currentID ?? "-")")
+        Thread.sleep(forTimeInterval: 0.75)
+        print("settled(1s)=\(catalog.currentID ?? "-")")
     }
     exit(0)
 
@@ -211,6 +217,20 @@ case "--prefs":
         shell.openPreferences()
     }
     app.run()
+
+case "--diag-export":
+    // 用法：--diag-export [目录]。走和菜单同一条导出路径，可指定落点便于冒烟
+    shell.start()
+    MainActor.assumeIsolated {
+        let dir = args.dropFirst().first.map { URL(fileURLWithPath: $0) }
+        if let url = shell.exportDiagnostics(to: dir, reveal: false) {
+            print("exported \(url.path)")
+        } else {
+            print("export failed, see ~/Library/Logs/Baton/baton.log")
+            exit(1)
+        }
+    }
+    exit(0)
 
 case "--config-export":
     // 用法：--config-export <path>。走和设置页同一条导出路径，冒烟时不用点文件面板。

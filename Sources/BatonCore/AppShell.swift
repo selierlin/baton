@@ -55,8 +55,11 @@ public final class AppShell: NSObject {
     /// 抓帧是异步的（ScreenCaptureKit 常要 300ms 起步，负载高时 1s 以上）。
     /// 这期间再进来一次同样的请求，它的覆盖层会在第一次已经框完之后才铺开 ——
     /// 用户看到的就是「刚选完，又是一层框」，而且第一次的结果被第二次顶掉。
-    /// 所以飞行期间的重复请求直接丢弃。
+    /// 所以飞行期间的重复请求不能叠加，只保留最后那次（见 capture 里的「重开」分支）。
     private var captureInFlight = false
+    /// 飞行中那次请求的序号。每次重开都 +1，旧任务交出选区时靠它认出「自己已经作废」，
+    /// 否则被打断的那场也会跑一遍 handle，把覆盖层重新铺出来。
+    private var captureGeneration = 0
 
     public override init() {
         super.init()
@@ -100,9 +103,15 @@ public final class AppShell: NSObject {
             self.annotatorHoldingRegular = false
             self.activation.leaveRegular()
         }
+        annotator?.decorate = { [weak self] image, scale in
+            self?.decorated(image, scale: scale) ?? image
+        }
 
         // 原地标注：框选结束后覆盖层不撤，画布直接长在选区上
         let inPlace = InPlaceAnnotator(pinController: pinController)
+        inPlace.decorate = { [weak self] image, scale in
+            self?.decorated(image, scale: scale) ?? image
+        }
         inPlace.onFinish = { [weak self] outcome in
             self?.log.info("原地标注结束：\(String(describing: outcome), privacy: .public)")
             ActionLog.result("annotate.finish", "\(outcome)")
@@ -118,6 +127,9 @@ public final class AppShell: NSObject {
             }
         }
         inPlaceAnnotator = inPlace
+
+        // 贴图细边框跟着「截图阴影」走：有窗口阴影就不再描一圈线
+        pinController.setDrawsOutline(!captureSettings.settings.addsShadow)
 
         buildStatusItem()
         startHotkeys()
@@ -139,6 +151,8 @@ public final class AppShell: NSObject {
         do {
             let database = try BatonDatabase()
             let store = ClipboardStore(database: database)
+            // FTS 对不上会让后续每条复制都插不进去（rowid 撞车），开机先对一次账
+            store.repairSearchIndexIfNeeded()
             let service = ClipboardService(store: store, hub: hub)
             service.start()
             clipboard = service
@@ -255,6 +269,7 @@ public final class AppShell: NSObject {
         switch action {
         case .annotate: captureArea()
         case .pin: capturePin()
+        case .pinClipboard: pinFromClipboard()
         case .scroll: captureScroll()
         case .ruler: showRuler()
         case .ocr: captureOCR()
@@ -334,6 +349,8 @@ public final class AppShell: NSObject {
 
         menu.addItem(submenu("贴图", symbol: "pin", items: [
             hotkeyItem(.pin, "截图贴图", #selector(capturePin), symbol: "pin"),
+            hotkeyItem(.pinClipboard, "剪贴板贴图", #selector(pinFromClipboard),
+                       symbol: "doc.on.clipboard"),
             makeItem("从文件贴图…", action: #selector(pinFromFile), key: "o", symbol: "doc"),
             hotkeyItem(.togglePins, "隐藏/显示所有贴图", #selector(toggleAllPins),
                        symbol: "eye.slash"),
@@ -379,6 +396,9 @@ public final class AppShell: NSObject {
         menu.addItem(smoothItem)
 
         menu.addItem(.separator())
+        // 出问题时不用开设置窗，点一下就能拿到日志切片
+        menu.addItem(makeItem("导出诊断信息…", action: #selector(exportDiagnosticsFromMenu),
+                              symbol: "stethoscope"))
         menu.addItem(makeItem("设置…", action: #selector(showPreferencesFromMenu),
                               key: ",", symbol: "gearshape"))
         menu.addItem(makeItem("退出 Baton", action: #selector(quit), key: "q",
@@ -475,7 +495,7 @@ public final class AppShell: NSObject {
                 item.keyEquivalent = ""
                 item.keyEquivalentModifierMask = []
                 item.toolTip = "未设置全局热键"
-            } else if let key = combo.menuKeyEquivalent {
+            } else if let key = combo.menuKeyEquivalent, !combo.menuModifierMask.isEmpty {
                 item.keyEquivalent = key
                 item.keyEquivalentModifierMask = combo.menuModifierMask
                 item.toolTip = combo.display
@@ -530,6 +550,8 @@ public final class AppShell: NSObject {
 
     @objc private func showPreferencesFromMenu() { openPreferences() }
 
+    @objc private func exportDiagnosticsFromMenu() { exportDiagnostics() }
+
     public func openPreferences(tab: Int = 0) {
         presentPreferences(tab: tab, title: nil)
     }
@@ -556,6 +578,7 @@ public final class AppShell: NSObject {
                 guard let self else { return }
                 self.hub.setScrollInterceptor(self.makeScrollInterceptor())
                 self.translator?.reloadSettings()
+                self.pinController.setDrawsOutline(!self.captureSettings.settings.addsShadow)
                 self.registerHotkeys()
                 self.refreshToggleStates()
             }
@@ -566,6 +589,7 @@ public final class AppShell: NSObject {
             }
             created.onExportConfig = { [weak self] in self?.exportConfig() }
             created.onImportConfig = { [weak self] in self?.importConfig() }
+            created.onExportDiagnostics = { [weak self] in self?.exportDiagnostics() }
             preferences = created
             prefs = created
         }
@@ -620,6 +644,62 @@ public final class AppShell: NSObject {
         reloadAfterImport()
         ActionLog.action("config.import", "sections=\(bundle.sectionNames.count) path=\(url.path)")
         return bundle
+    }
+
+    /// 导出诊断包：最近日志 + 环境与输入法状态，落到下载目录并在 Finder 里选中。
+    ///
+    /// 设置页按钮、菜单项和 `--diag-export` 共用这一条路径。
+    /// `directory` / `reveal` 只给命令行冒烟用，正常入口不传。
+    @discardableResult
+    public func exportDiagnostics(to directory: URL? = nil, reveal: Bool = true) -> URL? {
+        // 先把标记行落盘，它才会出现在包里——以后只翻原日志也能看到这一刻在导诊断
+        ActionLog.action("diag.export", "start")
+        // 导出是低频的一次性动作，主线程上等这几毫秒写入是值得的
+        ActionLog.shared.flush()
+
+        let info = Bundle.main.infoDictionary
+        let version = "\(info?["CFBundleShortVersionString"] as? String ?? "dev") "
+            + "(\(info?["CFBundleVersion"] as? String ?? "0"))"
+        let front = NSWorkspace.shared.frontmostApplication.map {
+            "\($0.localizedName ?? "-") (\($0.bundleIdentifier ?? "-"))"
+        } ?? "-"
+        let input = DiagnosticBundle.Snapshot.InputState(
+            enabled: inputSource?.isEnabled ?? false,
+            switchDelayMs: inputSource?.switchDelayMs ?? 0,
+            currentSource: inputSource?.currentSourceID ?? "-",
+            ruleCount: inputSource?.rules.count ?? 0,
+            memoryCount: inputSource?.memory.count ?? 0,
+            installed: inputSource?.installedSources.map(\.id) ?? [],
+            missingSources: inputSource?.missingSources.map(\.name) ?? []
+        )
+        let snapshot = DiagnosticBundle.Snapshot(
+            appVersion: version,
+            osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+            architecture: Self.architecture,
+            frontApp: front,
+            input: input
+        )
+
+        do {
+            let url = try DiagnosticBundle.export(snapshot, destinationDirectory: directory)
+            ActionLog.result("diag.export", "ok path=\(url.path)")
+            if reveal { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            return url
+        } catch {
+            ActionLog.fail("diag.export", "error=\(error.localizedDescription)")
+            presentAlert(title: "导出诊断信息失败", message: error.localizedDescription)
+            return nil
+        }
+    }
+
+    private static var architecture: String {
+        #if arch(arm64)
+        return "arm64"
+        #elseif arch(x86_64)
+        return "x86_64"
+        #else
+        return "unknown"
+        #endif
     }
 
     private func exportConfig() {
@@ -750,6 +830,19 @@ public final class AppShell: NSObject {
     @objc private func captureTranslate() { capture(intent: .area, action: .translate) }
     @objc private func captureOCR() { capture(intent: .area, action: .ocr(silent: false)) }
     @objc private func capturePin() { capture(intent: .area, action: .pin) }
+
+    /// 把剪贴板里的内容直接贴到桌面上。图钉成位图，文字钉成文字卡。
+    ///
+    /// 截图贴图要先框一次，从文件贴图要先落盘；只是「网页上复制一张图，想钉在旁边对照」
+    /// 的话这两条都绕，所以单独给一条路（Longshot 里叫剪贴板贴图）。
+    @objc private func pinFromClipboard() {
+        ActionLog.action("pin.clipboard", "")
+        guard pinController.pinPasteboard() else {
+            presentAlert(title: "剪贴板里没有可贴的内容",
+                         message: "先复制一张图片或一段文字，再按一次。")
+            return
+        }
+    }
 
     /// 从磁盘挑一张图贴出来。Finder 直接拖到已有贴图上也是这条路。
     @objc private func pinFromFile() {
@@ -913,6 +1006,7 @@ capturesAudio: recordingSettings.capturesAudio,
         // 已经在尺子里、或正在标注时不叠第二层覆盖窗
         guard ruler == nil, inPlaceAnnotator?.isActive != true else { return }
         let controller = RulerController(settings: rulerSettings)
+        controller.pinWindowIDs = pinController.pinWindowNumbers
         controller.onCaptureArea = { [weak self] image, scale in
             // 尺子里量好的区域直接进标注，不用再重新框一次
             self?.presentAnnotation(image: image, scale: scale.width)
@@ -933,13 +1027,21 @@ capturesAudio: recordingSettings.capturesAudio,
     }
 
     private func capture(intent: CaptureIntent, action: CaptureAction = .copy) {
-        // 上一场还没交出选区：丢掉这次请求，别让两层覆盖层叠着（见 captureInFlight）
+        // 上一场还停在框选阶段（最常见：覆盖层已经铺开，用户没看清又按了一次热键）：
+        // 直接丢弃的话，覆盖层吞掉的那次按键看起来就是「按了没反应」，而被遮住的弹窗
+        // 也一直收不到操作。改成「以最后这次为准」——先收干净旧的那场，再重新铺。
         if captureInFlight {
-            ActionLog.action("capture.skip",
-                             "reason=inFlight intent=\(intent.logText) action=\(action.logText)")
-            return
+            ActionLog.action("capture.restart",
+                             "intent=\(intent.logText) action=\(action.logText) "
+                             + "overlay=\(captureSession.overlayController.debugOverlayVisible)")
+            finishStaleCapture()
         }
         captureInFlight = true
+        captureGeneration &+= 1
+        let generation = captureGeneration
+        // 贴图要留在冻结帧里：抓帧排除的只是 Baton 自己的 UI（覆盖层 / HUD / 设置窗），
+        // 贴图是屏幕上用户自己摆的东西，跟别的 App 窗口一样该被看见。
+        captureSession.pinWindowIDs = pinController.pinWindowNumbers
         // 尺子开着时按截图热键：先把尺子收掉，别让两层冻结帧打架
         ruler?.cancel()
         // 倒计时还没走完又触发别的截图：以新的为准，别两个面板叠着
@@ -948,6 +1050,10 @@ capturesAudio: recordingSettings.capturesAudio,
         let started = Date()
         ActionLog.action("capture.begin",
                          "intent=\(intent.logText) action=\(action.logText) front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "-")")
+        // 上一次的结果窗（OCR / 翻译）可能还开着、只是被别的 App 压下去了。
+        // 下面的 activate 会把自己所有窗口重新提到最前，那扇旧窗会突然「复活」，
+        // 和新结果窗一起摆在眼前。既然已经在开新的一场，旧结果就该退场。
+        translator?.hidePanel()
         NSApp.activate()
         Task { [weak self] in
             guard let self else { return }
@@ -960,6 +1066,12 @@ capturesAudio: recordingSettings.capturesAudio,
             default: holdsUntilHandled = false
             }
             let outcome = await captureSession.begin(intent: intent, action: action)
+            // 被打断的那场（中途又按了热键）：覆盖层和 continuation 已经被新的接管，
+            // 这里的 outcome 一律作废，不然会把新会话的覆盖层当成自己的成果继续处理
+            guard generation == self.captureGeneration else {
+                ActionLog.result("capture.stale", "gen=\(generation) \(outcome)")
+                return
+            }
             // 选区已到手（且不是还要接着识别的动作），后续不该再挡住新的截图
             if !holdsUntilHandled { self.captureInFlight = false }
             let ms = Int(Date().timeIntervalSince(started) * 1000)
@@ -978,6 +1090,19 @@ capturesAudio: recordingSettings.capturesAudio,
             }
             if holdsUntilHandled { self.captureInFlight = false }
         }
+    }
+
+    /// 收掉一场还没交出选区的截图，给新的请求腾地方。
+    ///
+    /// 标注窗不在此列：它已经是「框完」的产物，再按热键应当照常开新的一场。
+    private func finishStaleCapture() {
+        // 原地标注借用的是同一层覆盖层，先拆编辑器（它不回头 dismiss 覆盖层），
+        // 再从外面统一收一次，免得两边都动手、甚至往前退一屏
+        if inPlaceAnnotator?.isActive == true {
+            inPlaceAnnotator?.discard()
+        }
+        captureSession.overlayController.dismiss()
+        captureInFlight = false
     }
 
     private func handle(_ result: CaptureResult) async {
@@ -1008,14 +1133,33 @@ capturesAudio: recordingSettings.capturesAudio,
             await runScroll(from: result)
         case .save(let format):
             guard let image = result.cropped else { return }
-            saveImage(image, format: format)
+            saveImage(image, format: format, scale: captureScale(of: result))
         default:
-            copyToPasteboard(result)
+            guard let image = result.cropped else { return }
+            copyToPasteboard(image, scale: captureScale(of: result))
         }
     }
 
+    /// 成品图加工：按设置套上阴影。OCR / 翻译 / 二维码 / 钉图不走这里——
+    /// 前三个要认内容，钉图窗口本身已经有系统阴影，再套一层会变成双层投影。
+    private func decorated(_ image: CGImage, scale: CGFloat) -> CGImage {
+        guard captureSettings.settings.addsShadow else { return image }
+        return CaptureDecorator.shadowed(image, scale: scale) ?? image
+    }
+
     /// 直接保存，不经过标注窗。用户自己选位置，取消就什么都不发生。
-    private func saveImage(_ image: CGImage, format: ImageFormat) {
+    private func saveImage(_ image: CGImage, format: ImageFormat, scale: CGFloat) {
+        // JPEG / HEIC 没有 alpha 通道，透明留白会被编码成黑边，所以这两种先垫白底
+        let output: CGImage
+        if captureSettings.settings.addsShadow {
+            let shadowed = format == .png
+                ? CaptureDecorator.shadowed(image, scale: scale)
+                : CaptureDecorator.shadowedOnWhite(image, scale: scale)
+            output = shadowed ?? image
+        } else {
+            output = image
+        }
+
         let panel = NSSavePanel()
         let stamp = Self.fileTimestamp()
         let type: UTType
@@ -1039,9 +1183,9 @@ capturesAudio: recordingSettings.capturesAudio,
                 ActionLog.result("save.panel", "cancelled=1")
                 return
             }
-            CGImageDestinationAddImage(destination, image, nil)
+            CGImageDestinationAddImage(destination, output, nil)
             let done = CGImageDestinationFinalize(destination)
-            ActionLog.result("save.image", "ok=\(done) file=\(url.lastPathComponent) px=\(image.width)x\(image.height)")
+            ActionLog.result("save.image", "ok=\(done) file=\(url.lastPathComponent) px=\(output.width)x\(output.height)")
         }
     }
 
@@ -1055,7 +1199,8 @@ capturesAudio: recordingSettings.capturesAudio,
     private func runScroll(from result: CaptureResult) async {
         let session = ScrollCaptureController(
             selection: CaptureSelection(globalRect: result.screenRect, display: result.display),
-            overlay: captureSession.overlayController
+            overlay: captureSession.overlayController,
+            pins: pinController.pinWindowNumbers
         )
         switch await session.run() {
         case .finished(let image):
@@ -1094,12 +1239,12 @@ capturesAudio: recordingSettings.capturesAudio,
         annotator?.show(image: image, scale: scale)
     }
 
-    private func copyToPasteboard(_ result: CaptureResult) {
-        guard let image = result.cropped else { return }
+    private func copyToPasteboard(_ image: CGImage, scale: CGFloat) {
+        let output = decorated(image, scale: scale)
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.writeObjects([NSImage(cgImage: image, size: .zero)])
-        log.info("已复制 \(Int(result.screenRect.width))×\(Int(result.screenRect.height)) 到剪贴板")
+        pasteboard.writeObjects([NSImage(cgImage: output, size: .zero)])
+        log.info("已复制 \(output.width)×\(output.height)px 到剪贴板")
     }
 
     /// 打开剪贴板历史。菜单项和全局热键都走这里，也给 `--clip-panel` 诊断用。
