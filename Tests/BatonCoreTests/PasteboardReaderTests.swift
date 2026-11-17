@@ -73,6 +73,41 @@ final class PasteboardReaderTests: XCTestCase {
                        "富文本和纯文本都要留下")
     }
 
+    /// 日常「复制颜色」写进来的都是纯文本，认成颜色分类后才用得上「颜色」这一档。
+    func testColorTextBecomesColor() throws {
+        pasteboard.clearContents()
+        pasteboard.setString("rgb(51, 153, 230)", forType: .string)
+
+        let snapshot = try XCTUnwrap(PasteboardReader.read(pasteboard, sourceApp: nil))
+        XCTAssertEqual(snapshot.kind, .color)
+        XCTAssertEqual(snapshot.text, "#3399E6", "列表、色块、搜索都用归一化 hex")
+        XCTAssertEqual(snapshot.contents.first?.value, Data("rgb(51, 153, 230)".utf8),
+                       "粘回去还得是原来那串，不能顺手改成 hex")
+    }
+
+    /// 同一个颜色换个写法只该留一条：hash 与 NSColor 分支共用 `c:` 前缀。
+    func testColorTextDedupesAcrossFormats() throws {
+        pasteboard.clearContents()
+        pasteboard.setString("#3399E6", forType: .string)
+        let hex = try XCTUnwrap(PasteboardReader.read(pasteboard, sourceApp: nil))
+
+        pasteboard.clearContents()
+        pasteboard.setString("rgb(51,153,230)", forType: .string)
+        let rgb = try XCTUnwrap(PasteboardReader.read(pasteboard, sourceApp: nil))
+
+        XCTAssertEqual(hex.kind, .color)
+        XCTAssertEqual(hex.contentHash, rgb.contentHash)
+    }
+
+    /// 句子里顺带出现色值不算颜色，否则技术笔记会被整段塞进颜色分类。
+    func testSentenceWithColorStaysText() throws {
+        pasteboard.clearContents()
+        pasteboard.setString("主色是 #3399E6", forType: .string)
+
+        let snapshot = try XCTUnwrap(PasteboardReader.read(pasteboard, sourceApp: nil))
+        XCTAssertEqual(snapshot.kind, .text)
+    }
+
     func testFinderFilesSkipIconImages() throws {
         let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("clip-\(UUID().uuidString).txt")
         try "x".write(to: fileURL, atomically: true, encoding: .utf8)

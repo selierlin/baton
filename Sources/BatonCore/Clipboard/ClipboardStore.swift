@@ -557,6 +557,40 @@ public final class ClipboardStore: Sendable {
             }
         }
     }
+
+    /// 开机对账：`item_fts` 的 rowid 必须和 `item` 一一对应。
+    ///
+    /// 一旦多出孤儿行（比如用 sqlite3 手动删过 item、或旧版本崩在删除中间），
+    /// 新条目拿到的 rowid 会撞上孤儿行，插入直接 `SQLite error 19`——
+    /// 表现是「复制什么都不进历史」，日志里只有一行 constraint failed。
+    /// 对账成本是两条 count，500 行级别，微秒级，放启动里可以忽略。
+    @discardableResult
+    public func repairSearchIndexIfNeeded() -> Bool {
+        let mismatched = (try? db.dbQueue.read { conn -> Bool in
+            let orphan = try Int.fetchOne(
+                conn, sql: "SELECT COUNT(*) FROM item_fts WHERE rowid NOT IN (SELECT rowid FROM item)"
+            ) ?? 0
+            let missing = try Int.fetchOne(
+                conn,
+                sql: """
+                    SELECT COUNT(*) FROM item
+                    WHERE text IS NOT NULL AND text <> ''
+                      AND rowid NOT IN (SELECT rowid FROM item_fts)
+                    """
+            ) ?? 0
+            return orphan > 0 || missing > 0
+        }) ?? false
+
+        guard mismatched else { return false }
+        do {
+            try rebuildSearchIndex()
+            ActionLog.action("clipboard.fts.repair", "rebuilt")
+            return true
+        } catch {
+            ActionLog.fail("clipboard.fts.repair", "\(error)")
+            return false
+        }
+    }
 }
 
 private func databaseQuestionMarks(count: Int) -> String {

@@ -139,6 +139,30 @@ public enum PasteboardReader {
             )
         }
 
+        // 3b. 纯颜色值文本（`#3399E6` / `rgb(…)` / `hsl(…)`）。
+        // 日常「复制颜色」写进来的都是纯文本，不带 NSColor 对象，
+        // 不在这里认出来，颜色分类就永远空着。
+        if let plain = pasteboard.string(forType: .string),
+           let hex = ColorText.hex(from: plain) {
+            let contents = textualContents(typeGroups, pasteboard: pasteboard, excluding: [])
+            if !contents.isEmpty {
+                return PasteboardSnapshot(
+                    kind: .color,
+                    // 与 NSColor 分支共用 hash：同一个颜色的文本写法和对象写法只留一条。
+                    // 落库 text 用归一化 hex（列表、搜索、色块都靠它），contents 保留原文，粘回去不变形
+                    contentHash: sha256("c:" + hex),
+                    text: hex,
+                    imageData: nil,
+                    imageExt: nil,
+                    pixelWidth: nil,
+                    pixelHeight: nil,
+                    byteSize: contents.reduce(0) { $0 + ($1.value?.count ?? 0) },
+                    filePaths: nil,
+                    contents: contents
+                )
+            }
+        }
+
         // 4. 文本：所有能持久化的文本类表示都留
         let contents = textualContents(typeGroups, pasteboard: pasteboard, excluding: [])
         guard let preview = previewText(contents),

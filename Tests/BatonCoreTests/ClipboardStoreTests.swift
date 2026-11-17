@@ -267,3 +267,44 @@ final class PasteboardSecretFilterTests: XCTestCase {
         XCTAssertEqual(ClipboardStore.ftsPhrase("a\"b"), "\"a\"\"b\"")
     }
 }
+
+/// FTS 与 item 对不上时，后续每条复制都会撞 rowid 写不进去（SQLite error 19），
+/// 用户看到的是「复制什么都不进历史」。这两条守住「能发现」和「能救回来」。
+final class ClipboardSearchRepairTests: XCTestCase {
+    private var directory: URL!
+
+    override func setUpWithError() throws {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("baton-repair-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let directory { try? FileManager.default.removeItem(at: directory) }
+    }
+
+    func testRepairRecoversFromOrphanFTSRows() throws {
+        let store = try ClipboardStore(directory: directory)
+        _ = try store.insert(ClipDraft(kind: .text, contentHash: "a", text: "第一条", byteSize: 3))
+        _ = try store.insert(ClipDraft(kind: .text, contentHash: "b", text: "第二条", byteSize: 3))
+
+        // 绕过 store 直接删 item（现场排查时用 sqlite3 手动清数据就是这样），FTS 行留成孤儿
+        try store.database.dbQueue.write { conn in
+            try conn.execute(sql: "DELETE FROM item WHERE contentHash = 'b'")
+        }
+
+        XCTAssertTrue(store.repairSearchIndexIfNeeded(), "有孤儿行就该重建")
+
+        // 修复后必须还能继续写——这里正是用户卡住的地方
+        let result = try store.insert(ClipDraft(kind: .text, contentHash: "c", text: "第三条", byteSize: 3))
+        XCTAssertFalse(result.deduplicated)
+        XCTAssertEqual(try store.search("第三条").count, 1)
+
+        XCTAssertFalse(store.repairSearchIndexIfNeeded(), "修好之后不该再重建")
+    }
+
+    func testHealthyIndexNeedsNoRepair() throws {
+        let store = try ClipboardStore(directory: directory)
+        _ = try store.insert(ClipDraft(kind: .text, contentHash: "a", text: "正常的库", byteSize: 4))
+        XCTAssertFalse(store.repairSearchIndexIfNeeded())
+    }
+}

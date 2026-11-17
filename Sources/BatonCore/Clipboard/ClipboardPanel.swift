@@ -33,6 +33,8 @@ public final class ClipboardPanelController: NSObject {
     private let countLabel = NSTextField(labelWithString: "")
     private let thumbnails = ThumbnailCache()
     private var keyMonitor: Any?
+    /// 多选的点选先后。`selectedRowIndexes` 只给升序行号，粘不出手的顺序。
+    private var selectionOrder = SelectionOrder()
 
     private static let listWidth: CGFloat = 580
     private static let previewWidth: CGFloat = 360
@@ -141,7 +143,9 @@ public final class ClipboardPanelController: NSObject {
         tableView.dataSource = self
         tableView.delegate = self
         tableView.target = self
-        tableView.doubleAction = #selector(copyOnly)
+        // 双击直接粘，和回车同义：用户按完快捷键习惯性双击某条，
+        // 落到 copyOnly 上只会塞进剪贴板不粘贴，看起来像「双击没反应」。
+        tableView.doubleAction = #selector(doubleClickPastes)
         // 键盘动作平时靠搜索框的 doCommandBy 传下来；用鼠标点过列表之后焦点在表格上，
         // 那条路就断了（回车不粘、Esc 不关、⌫ 不删、Tab 不预览），这里接回同一条
         tableView.onCommand = { [weak self] selector in
@@ -164,6 +168,7 @@ public final class ClipboardPanelController: NSObject {
         separator.translatesAutoresizingMaskIntoConstraints = false
 
         preview.translatesAutoresizingMaskIntoConstraints = false
+        preview.onCopyColor = { [weak self] in self?.copySelectedColor() }
 
         countLabel.font = .systemFont(ofSize: 11)
         countLabel.textColor = .tertiaryLabelColor
@@ -321,7 +326,10 @@ public final class ClipboardPanelController: NSObject {
             items = []
             NSLog("[Baton] 剪贴板查询失败：\(error)")
         }
+        // 列表换了内容，行号对应的条目也换了，旧的先后顺序不能留
+        selectionOrder.reset()
         tableView.reloadData()
+        selectionOrder.sync(with: tableView.selectedRowIndexes)
         emptyLabel.stringValue = query.isEmpty && filter == nil ? "还没有剪贴板记录" : "没有匹配的记录"
         emptyLabel.isHidden = !items.isEmpty
         countLabel.stringValue = items.isEmpty ? "" : "共 \(items.count) 条"
@@ -370,13 +378,23 @@ public final class ClipboardPanelController: NSObject {
 
     // MARK: - 动作
 
+    /// 预览区的「复制色值」：复制归一化后的 hex，和预览里显示的那串一致。
+    ///
+    /// 不写回原始 contents（`rgb(...)` 之类）是刻意的：按钮紧挨着 hex 文本，
+    /// 复制出别的东西会让人以为点错了。直接写剪贴板，入库时会按颜色去重，不会多一条。
+    private func copySelectedColor() {
+        guard let index = selectedIndex, index < items.count else { return }
+        let item = items[index].item
+        guard item.clipKind == .color, let hex = item.text else { return }
+        hide()
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(hex, forType: .string)
+    }
+
     private func commit(paste: Bool, plainText: Bool) {
         // 多选时回车 = 建粘贴栈：之后每按一次 ⌘V 自动换下一条
-        if tableView.selectedRowIndexes.count > 1 {
-            let picked = tableView.selectedRowIndexes.compactMap { row in
-                row < items.count ? items[row].item : nil
-            }
-            guard picked.count > 1 else { return }
+        let picked = pickedStackItems()
+        if picked.count > 1 {
             hide()
             onCommitStack?(picked)
             return
@@ -385,6 +403,19 @@ public final class ClipboardPanelController: NSObject {
         let item = items[index].item
         hide()
         onCommit?(item, paste, plainText)
+    }
+
+    /// 多选条目，按点选先后排好。
+    ///
+    /// 直接拿 `selectedRowIndexes` 会得到升序行号（列表是新的在上），
+    /// 粘出来跟点选顺序对不上，所以以 `selectionOrder` 为准；
+    /// 万一有行没记上（程序化改选区），按行号补在队尾兜底。
+    private func pickedStackItems() -> [ClipItem] {
+        let selected = tableView.selectedRowIndexes
+        guard selected.count > 1 else { return [] }
+        var ordered = selectionOrder.rows.filter { selected.contains($0) }
+        for row in selected where !ordered.contains(row) { ordered.append(row) }
+        return ordered.compactMap { row in row < items.count ? items[row].item : nil }
     }
 
     private func deleteSelected() {
@@ -399,8 +430,12 @@ public final class ClipboardPanelController: NSObject {
         }
     }
 
-    @objc private func copyOnly() {
-        commit(paste: false, plainText: false)
+    /// 双击 = 回车：粘到前台 App。
+    ///
+    /// 双击前那一下单击已经把选中行换成目标行，这里不用再看点击位置。
+    /// 多选状态下仍走 commit 的粘贴栈分支，和回车一致。
+    @objc private func doubleClickPastes() {
+        commit(paste: true, plainText: NSEvent.modifierFlags.contains(.option))
     }
 
     @objc private func filterChanged() {
@@ -528,11 +563,28 @@ extension ClipboardPanelController: NSTableViewDataSource, NSTableViewDelegate {
         }()
         let hit = items[row]
         cell.configure(hit: hit, index: row + 1,
-                       thumbnail: thumbnails.image(for: hit.item, store: store, size: 20))
+                       thumbnail: thumbnails.image(for: hit.item, store: store, size: 20),
+                       order: orderBadge(for: row))
         return cell
     }
 
+    /// 多选时行尾那个序号＝第几个粘，单选时不显示。
+    private func orderBadge(for row: Int) -> Int? {
+        guard tableView.selectedRowIndexes.count > 1,
+              let index = selectionOrder.rows.firstIndex(of: row) else { return nil }
+        return index + 1
+    }
+
+    private func refreshOrderBadges() {
+        for row in 0..<items.count {
+            let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? ClipRowCell
+            cell?.setOrder(orderBadge(for: row))
+        }
+    }
+
     public func tableViewSelectionDidChange(_ notification: Notification) {
+        selectionOrder.sync(with: tableView.selectedRowIndexes)
+        refreshOrderBadges()
         guard let index = selectedIndex else { return }
         tableView.scrollRowToVisible(index)
         preview.show(items[index].item, store: store)
@@ -579,6 +631,8 @@ private final class ClipRowCell: NSTableCellView {
     private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let timeLabel = NSTextField(labelWithString: "")
+    /// 多选时的「第几个粘」角标
+    private let orderBadge = OrderBadge()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -606,7 +660,11 @@ private final class ClipRowCell: NSTableCellView {
         timeLabel.setContentHuggingPriority(.required, for: .horizontal)
         timeLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        for view in [indexLabel, iconView, titleLabel, timeLabel] as [NSView] {
+        orderBadge.translatesAutoresizingMaskIntoConstraints = false
+        orderBadge.setContentHuggingPriority(.required, for: .horizontal)
+        orderBadge.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        for view in [indexLabel, iconView, titleLabel, timeLabel, orderBadge] as [NSView] {
             addSubview(view)
         }
 
@@ -622,6 +680,11 @@ private final class ClipRowCell: NSTableCellView {
 
             titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 8),
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: orderBadge.leadingAnchor, constant: -8),
+
+            orderBadge.trailingAnchor.constraint(equalTo: timeLabel.leadingAnchor, constant: -8),
+            orderBadge.centerYAnchor.constraint(equalTo: centerYAnchor),
+            orderBadge.heightAnchor.constraint(equalToConstant: 14),
 
             timeLabel.leadingAnchor.constraint(greaterThanOrEqualTo: titleLabel.trailingAnchor, constant: 8),
             timeLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
@@ -632,14 +695,38 @@ private final class ClipRowCell: NSTableCellView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(hit: ClipHit, index: Int, thumbnail: NSImage?) {
+    func configure(hit: ClipHit, index: Int, thumbnail: NSImage?, order: Int?) {
         let item = hit.item
         indexLabel.stringValue = index <= 9 ? "\(index)" : ""
-        iconView.image = thumbnail ?? Self.symbol(for: item)
+        iconView.image = thumbnail ?? Self.colorSwatch(for: item) ?? Self.symbol(for: item)
         // 路径的文件名在末尾，尾部截断会把最有用的部分切掉，改成中间截断
         titleLabel.lineBreakMode = item.clipKind == .file ? .byTruncatingMiddle : .byTruncatingTail
         titleLabel.attributedStringValue = Self.title(for: item, ranges: hit.ranges)
         timeLabel.stringValue = Self.relativeTime(item.sortTime)
+        setOrder(order)
+    }
+
+    /// 多选时显示「第几个粘」，单选时收起（宽度收到 0，不占位）。
+    func setOrder(_ order: Int?) {
+        orderBadge.order = order
+    }
+
+    /// 颜色条目直接画一块色，比统一画调色板图标好认。
+    private static func colorSwatch(for item: ClipItem) -> NSImage? {
+        guard item.clipKind == .color,
+              let hex = item.text,
+              let color = NSColor(hexString: hex) else { return nil }
+        let box = NSRect(x: 1, y: 1, width: 18, height: 18)
+        return NSImage(size: NSSize(width: 20, height: 20), flipped: false) { _ in
+            let path = NSBezierPath(roundedRect: box, xRadius: 4, yRadius: 4)
+            color.setFill()
+            path.fill()
+            // 白色/深色色块在深浅底色上都可能糊掉，描一圈分隔线兜底
+            NSColor.separatorColor.setStroke()
+            path.lineWidth = 1
+            path.stroke()
+            return true
+        }
     }
 
     private static func symbol(for item: ClipItem) -> NSImage? {
@@ -699,6 +786,42 @@ private final class ClipRowCell: NSTableCellView {
     }
 }
 
+/// 多选连粘时行尾的「第几个粘」小圆标。
+///
+/// 用 `labelColor` / `textBackgroundColor` 这对反转色而不是强调色：行被选中时
+/// 背景本身就是强调色，强调色的小标贴上去会糊成一片。
+private final class OrderBadge: NSView {
+    var order: Int? {
+        didSet {
+            isHidden = order == nil
+            invalidateIntrinsicContentSize()
+            needsDisplay = true
+        }
+    }
+
+    override var intrinsicContentSize: NSSize {
+        guard let order else { return NSSize(width: 0, height: 14) }
+        return NSSize(width: order >= 10 ? 20 : 15, height: 14)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let order else { return }
+        let path = NSBezierPath(roundedRect: bounds, xRadius: 7, yRadius: 7)
+        NSColor.labelColor.setFill()
+        path.fill()
+
+        let text = "\(order)" as NSString
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold),
+            .foregroundColor: NSColor.textBackgroundColor,
+        ]
+        let size = text.size(withAttributes: attrs)
+        text.draw(at: NSPoint(x: bounds.midX - size.width / 2,
+                              y: bounds.midY - size.height / 2),
+                  withAttributes: attrs)
+    }
+}
+
 // MARK: - 预览
 
 /// 预览区顶部的一行元信息。列表行只保留时间，其余都挪到这里，
@@ -731,7 +854,10 @@ private final class ClipPreviewView: NSView {
     private let imageView = NSImageView()
     private let swatch = NSView()
     private let hint = NSTextField(labelWithString: "")
+    private let copyButton = NSButton(title: "复制色值", target: nil, action: nil)
     private let metaLabel = NSTextField(labelWithString: "")
+    /// 颜色预览里的「复制色值」：面板会把选中的颜色条目按普通复制提交
+    var onCopyColor: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -770,13 +896,22 @@ private final class ClipPreviewView: NSView {
         hint.alignment = .center
         hint.translatesAutoresizingMaskIntoConstraints = false
 
+        copyButton.bezelStyle = .rounded
+        copyButton.controlSize = .small
+        copyButton.font = .systemFont(ofSize: 11)
+        copyButton.target = self
+        copyButton.action = #selector(copyColorValue)
+        copyButton.toolTip = "复制 #RRGGBB"
+        copyButton.translatesAutoresizingMaskIntoConstraints = false
+        copyButton.isHidden = true
+
         metaLabel.font = .systemFont(ofSize: 11)
         metaLabel.textColor = .secondaryLabelColor
         metaLabel.lineBreakMode = .byTruncatingTail
         metaLabel.maximumNumberOfLines = 1
         metaLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        for view in [textScroll, imageView, swatch, hint, metaLabel] as [NSView] { addSubview(view) }
+        for view in [textScroll, imageView, swatch, hint, copyButton, metaLabel] as [NSView] { addSubview(view) }
 
         NSLayoutConstraint.activate([
             metaLabel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
@@ -800,6 +935,9 @@ private final class ClipPreviewView: NSView {
 
             hint.centerXAnchor.constraint(equalTo: centerXAnchor),
             hint.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+
+            copyButton.centerXAnchor.constraint(equalTo: centerXAnchor),
+            copyButton.bottomAnchor.constraint(equalTo: hint.topAnchor, constant: -8),
         ])
         show(nil, store: nil)
     }
@@ -841,6 +979,7 @@ private final class ClipPreviewView: NSView {
         textScroll.isHidden = true
         imageView.isHidden = true
         swatch.isHidden = true
+        copyButton.isHidden = true
         hint.isHidden = false
 
         guard let item else {
@@ -886,10 +1025,16 @@ private final class ClipPreviewView: NSView {
         case .color:
             let hex = item.text ?? "#000000"
             hint.stringValue = hex
+            hint.isHidden = false
             swatch.isHidden = false
+            copyButton.isHidden = false
             swatch.layer?.backgroundColor = NSColor(hexString: hex)?.cgColor
                 ?? NSColor.black.cgColor
         }
+    }
+
+    @objc private func copyColorValue() {
+        onCopyColor?()
     }
 }
 

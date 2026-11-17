@@ -21,6 +21,8 @@ public final class ClipboardService {
     private let log = Logger(subsystem: "com.selier.baton", category: "clipboard")
     private var panel: ClipboardPanelController?
     private var task: Task<Void, Never>?
+    /// 后台采集任务串行链：上一次没落完，下一次排队等，保证顺序
+    private var captureTask: Task<Void, Never>?
     private var previousApp: NSRunningApplication?
     private var ocrTasks: [String: Task<Void, Never>] = [:]
     /// 粘贴栈：还剩几条等着依次粘
@@ -52,7 +54,7 @@ public final class ClipboardService {
             for await event in hub.events(buffering: 32) {
                 switch event {
                 case .clipboardChanged:
-                    await capturePasteboard()
+                    capturePasteboard()
                 case .scroll, .frontAppChanged:
                     break
                 }
@@ -88,49 +90,76 @@ public final class ClipboardService {
 
     /// 采集。剪贴板数据由源进程懒提供，刚变更时偶尔读到「有类型但长度为 0」，
     /// 读不到就短暂重试；这种空读不改变 changeCount，不重试这条就永久丢了。
-    private func capturePasteboard() async {
-        let pasteboard = NSPasteboard.general
+    ///
+    /// **读板、算哈希、PNG 重编码、写 blob、入库全在后台**：复制一张大图这条链
+    /// 实测能占住主线程上百毫秒，表现就是「按 ⌘C 之后界面顿一下」。
+    /// 主线程只留「取一下源 App、判一下是不是机密」两件几乎不花时间的事。
+    private func capturePasteboard() {
         let sourceApp = currentSourceApp()
-        let types = (pasteboard.types ?? []).map(\.rawValue)
+        let types = (NSPasteboard.general.types ?? []).map(\.rawValue)
         guard !PasteboardReader.isSecret(types: types) else { return }
 
-        var snapshot: PasteboardSnapshot?
-        for attempt in 0..<3 {
-            snapshot = PasteboardReader.read(pasteboard, sourceApp: sourceApp.name)
-            if snapshot != nil { break }
-            if attempt < 2 {
-                try? await Task.sleep(for: .milliseconds(80))
-            }
-        }
-        guard let snapshot else { return }
-
-        let draft = ClipDraft(
-            kind: snapshot.kind,
-            contentHash: snapshot.contentHash,
-            text: snapshot.text,
-            pngData: snapshot.imageData,
-            imageExt: snapshot.imageExt,
-            pixelWidth: snapshot.pixelWidth,
-            pixelHeight: snapshot.pixelHeight,
-            byteSize: snapshot.byteSize,
-            sourceApp: sourceApp.name,
-            sourceBundleID: sourceApp.bundleID,
-            meta: snapshot.filePaths,
-            contents: snapshot.contents
-        )
-
-        do {
-            let result = try store.insert(draft)
-            if !result.deduplicated {
-                let removed = try store.trim()
-                if removed > 0 { collectGarbage() }
-                if snapshot.kind == .image {
-                    scheduleImageTitle(item: result.item)
-                }
+        let store = self.store
+        let logger = self.log
+        let previous = captureTask
+        // 回主线程收尾。单独提出来是为了只把「要通知的东西」带过去，
+        // 不在 detached 任务里抓 self（会把整个服务跨隔离域发过去）
+        let finish: @MainActor (ClipItem, Bool, Int, ClipKind) -> Void = { [weak self] item, deduplicated, removed, kind in
+            guard let self else { return }
+            if removed > 0 { self.collectGarbage() }
+            if !deduplicated, kind == .image {
+                self.scheduleImageTitle(item: item)
             }
             NotificationCenter.default.post(name: .batonClipboardDidChange, object: nil)
-        } catch {
-            log.error("剪贴板入库失败：\(String(describing: error), privacy: .public)")
+        }
+        captureTask = Task.detached(priority: .utility) {
+            // 串行：上一次没落完就先等它。连按两次复制时并发读会把同一条读两遍，
+            // 入库顺序也会反过来。
+            await previous?.value
+            let started = Date()
+
+            var snapshot: PasteboardSnapshot?
+            for attempt in 0..<3 {
+                snapshot = PasteboardReader.read(NSPasteboard.general, sourceApp: sourceApp.name)
+                if snapshot != nil { break }
+                if attempt < 2 {
+                    try? await Task.sleep(for: .milliseconds(80))
+                }
+            }
+            guard let snapshot else {
+                ActionLog.fail("clipboard.capture", "empty types=\(types.count)")
+                return
+            }
+
+            let draft = ClipDraft(
+                kind: snapshot.kind,
+                contentHash: snapshot.contentHash,
+                text: snapshot.text,
+                pngData: snapshot.imageData,
+                imageExt: snapshot.imageExt,
+                pixelWidth: snapshot.pixelWidth,
+                pixelHeight: snapshot.pixelHeight,
+                byteSize: snapshot.byteSize,
+                sourceApp: sourceApp.name,
+                sourceBundleID: sourceApp.bundleID,
+                meta: snapshot.filePaths,
+                contents: snapshot.contents
+            )
+
+            do {
+                let result = try store.insert(draft)
+                var removed = 0
+                if !result.deduplicated {
+                    removed = try store.trim()
+                }
+                let kind = snapshot.kind
+                ActionLog.action("clipboard.capture",
+                                 "kind=\(kind.rawValue) ms=\(Int(Date().timeIntervalSince(started) * 1000)) dedup=\(result.deduplicated)")
+                await finish(result.item, result.deduplicated, removed, kind)
+            } catch {
+                ActionLog.fail("clipboard.capture", "\(error)")
+                logger.error("剪贴板入库失败：\(String(describing: error), privacy: .public)")
+            }
         }
     }
 
