@@ -21,6 +21,8 @@ import os
 ///    「0,0,1,0,0,1」这种一格格挪的台阶，是最容易被察觉的不丝滑。
 /// 4. **按显示器刷新率逐帧投**，不是固定 8ms。8ms 在 60Hz 屏上是两帧并一帧，
 ///    测出来就是「一大步 + 一小步」的锯齿，看着发卡。
+/// 5. **⌘ 按住时完全不接管**。⌘Tab 的应用切换器会把滚轮当「下一个 App」，
+///    一格摊成几十帧等于连按几十次；而且尾巴会在切换器弹出后继续投，选中项自己跑。
 @MainActor
 public final class ScrollSmoother {
     /// 自投事件的指纹。"BATO"
@@ -89,11 +91,21 @@ public final class ScrollSmoother {
         }
         guard sample.deltaX != 0 || sample.deltaY != 0 else { return false }
 
+        // ⌘ 按住时不接管。⌘Tab（应用切换器）/ ⌘`（窗口切换）开着的时候，系统把滚轮
+        // 当成「移动选中项」——而我们一格会摊成几十帧，等于连按几十次，
+        // 选中项会一路飞过去、松手都停不下来。原样放行才对得上系统手感：一格走一个。
+        let flags = CGEventFlags(rawValue: sample.flags)
+        if flags.contains(.maskCommand) {
+            finishGesture()
+            lastDecision = "按住 ⌘（应用/窗口切换器），不接管"
+            return false
+        }
+
         // 禁用键：按住时原始事件直接交给 App。
         // 还要把正在跑的尾巴停掉——不然手指按下去的瞬间，上一格的惯性还在往下滑，
         // 想「精确定位」的时候反而更飘。
         if let flag = settings.bypassKey.flag,
-           CGEventFlags(rawValue: sample.flags).contains(flag) {
+           flags.contains(flag) {
             finishGesture()
             lastDecision = "按住 \(settings.bypassKey.title)（禁用键），不接管"
             return false
@@ -141,7 +153,6 @@ public final class ScrollSmoother {
         // NSScrollView 都按修饰键换轴），而且只对「行单位」的离散事件生效。
         // Baton 把一格重写成带相位的像素事件后，App 那套换轴逻辑不再触发，
         // 结果是按着 Shift 反而一动不动（横向视图里竖滚无处可去）。
-        let flags = CGEventFlags(rawValue: sample.flags)
         let axis = Self.shiftAxes(x: tickX, y: tickY, flags: flags)
         framer.push(x: axis.x,
                     y: axis.y,
@@ -311,6 +322,14 @@ final class ScrollFramer: @unchecked Sendable {
     }
 
     private func tick(dt step: Double) {
+        // ⌘ 一按下就把还没走完的尾巴丢掉。上一格的尾巴有几十帧，⌘Tab 弹出后这些帧
+        // 仍然会投进切换器，选中项就会自己往前跑——用户看到的是「弹窗一直在滚动选择」。
+        // 读的是真实修饰键状态，而不是事件里记的：尾巴是 ⌘ 之前攒的，flags 里没有 ⌘。
+        if CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand) {
+            reset()
+            return
+        }
+
         lock.lock()
         let dt = min(max(step, 1.0 / 240.0), 1.0 / 30.0)
 

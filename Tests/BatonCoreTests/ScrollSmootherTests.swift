@@ -321,15 +321,46 @@ final class ScrollSmootherFilterTests: XCTestCase {
         smoother.finishGesture()
     }
 
-    /// 配的是 ⌥，那 ⌘ 和 ⇧ 不该被误判
+    /// 配的是 ⌥，那 ⇧ 不该被误判
     func testOtherModifiersAreNotMistakenForBypass() {
         let smoother = ScrollSmoother(store: nil)
         smoother.apply { $0.bypassKey = .option }
 
-        XCTAssertTrue(smoother.consume(sample(deltaY: 3, flags: CGEventFlags.maskCommand.rawValue)))
-        smoother.finishGesture()
         XCTAssertTrue(smoother.consume(sample(deltaY: 3, flags: CGEventFlags.maskShift.rawValue)))
+        XCTAssertEqual(smoother.swallowedTicks, 1)
         smoother.finishGesture()
+    }
+
+    // MARK: - ⌘ = 系统切换器手势
+
+    /// ⌘Tab 的应用切换器把滚轮当「下一个 App」。一格被摊成几十帧就是连按几十次，
+    /// 选中项会一路飞过去，所以 ⌘ 按住时必须原样放行、一格只走一个。
+    func testCommandHeldPassesThroughForAppSwitcher() {
+        let smoother = ScrollSmoother(store: nil)
+        XCTAssertEqual(smoother.settings.bypassKey, .none)
+
+        XCTAssertFalse(smoother.consume(sample(deltaY: 3, flags: CGEventFlags.maskCommand.rawValue)))
+        XCTAssertEqual(smoother.swallowedTicks, 0)
+        XCTAssertTrue(smoother.lastDecision?.contains("⌘") ?? false)
+    }
+
+    /// ⌘ 不接管这条规则和「禁用键」是两件事：用户配了 ⌥ 也要照样生效
+    func testCommandPassThroughIsIndependentOfBypassKey() {
+        let smoother = ScrollSmoother(store: nil)
+        smoother.apply { $0.bypassKey = .option }
+
+        XCTAssertFalse(smoother.consume(sample(deltaY: 3, flags: CGEventFlags.maskCommand.rawValue)))
+        XCTAssertEqual(smoother.swallowedTicks, 0)
+    }
+
+    /// ⌘ 之外带别的修饰键（⌥⌃⇧）仍然照常平滑，别把规则放大
+    func testNonCommandModifiersStillSmoothed() {
+        let smoother = ScrollSmoother(store: nil)
+        XCTAssertTrue(smoother.consume(sample(deltaY: 3, flags: CGEventFlags.maskAlternate.rawValue)))
+        smoother.finishGesture()
+        XCTAssertTrue(smoother.consume(sample(deltaY: 3, flags: CGEventFlags.maskControl.rawValue)))
+        smoother.finishGesture()
+        XCTAssertEqual(smoother.swallowedTicks, 2)
     }
 
     /// 默认「无」时不做任何额外判断，照常平滑
